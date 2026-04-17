@@ -23,6 +23,10 @@ ANOMALY_CONFIRM_SEC     = 3
 ANOMALY_CLEAR_SEC       = 2
 DRIFT_EMA_ALPHA         = 0.08
 DRIFT_CONFIRM_MULT      = 1.6
+MIN_EFFECTIVE_STD       = 0.5
+NON_FAULT_RISK_CAP      = 92.0
+RISK_STEP_NON_FAULT     = 14.0
+RISK_STEP_FAULT         = 24.0
 DATA_GAP_WARN_SEC       = 8.0
 DATA_GAP_CRIT_SEC       = 20.0   # raised — avoids false positives on slow startup
 ALERT_COOLDOWN_SEC      = 45.0
@@ -117,7 +121,8 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
             state.out_of_bounds_streak[field] = 0
 
         state.ema[field] = DRIFT_EMA_ALPHA * value + (1 - DRIFT_EMA_ALPHA) * state.ema[field]
-        ema_dev = abs(state.ema[field] - bl.mean) / bl.std if bl.std > 0 else 0
+        effective_std = max(bl.std, MIN_EFFECTIVE_STD)
+        ema_dev = abs(state.ema[field] - bl.mean) / effective_std if effective_std > 0 else 0
         if not out_of_bounds and ema_dev > DRIFT_CONFIRM_MULT:
             state.drift_streak[field] += 1
         else:
@@ -128,7 +133,7 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
 
         if confirmed_spike:
             has_spike = True
-            dev = ((value - bl.upper) / bl.std) if is_above else ((bl.lower - value) / bl.std)
+            dev = ((value - bl.upper) / effective_std) if is_above else ((bl.lower - value) / effective_std)
             dev = max(dev, 0)
             anomalies[field] = {
                 "value": value, "expected_range": f"{bl.lower:.1f}–{bl.upper:.1f}",
@@ -171,10 +176,15 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
 
     status_mult = {"running": 1.0, "warning": 2.5, "fault": 5.5}.get(reading.get("status", "running"), 1.0)
     base_risk   = max(risk_parts) if risk_parts else 0
-    raw_risk    = min(base_risk * 5 * compound * persistence * status_mult, 100.0)
+    raw_risk_unbounded = base_risk * 5 * compound * persistence * status_mult
+    non_fault = reading.get("status", "running") != "fault"
+    risk_cap = NON_FAULT_RISK_CAP if non_fault else 100.0
+    raw_risk = min(raw_risk_unbounded, risk_cap)
 
     if anomalies:
-        state.smoothed_risk = state.smoothed_risk * 0.4 + raw_risk * 0.6
+        desired_risk = state.smoothed_risk * 0.4 + raw_risk * 0.6
+        max_step = RISK_STEP_NON_FAULT if non_fault else RISK_STEP_FAULT
+        state.smoothed_risk = min(desired_risk, state.smoothed_risk + max_step)
     else:
         state.smoothed_risk = state.smoothed_risk * 0.72
         if state.clear_streak >= ANOMALY_CLEAR_SEC:
@@ -444,7 +454,7 @@ class PredictiveMaintenanceAgent:
                 # Broad catch ensures one failing stream never kills the others
                 print(f"[FORGESIGHT] Stream error for {mid}: {type(e).__name__}: {e}")
                 if self.running:
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(1)
 
     async def start(self):
         self.running    = True
