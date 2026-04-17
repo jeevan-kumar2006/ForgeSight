@@ -218,6 +218,16 @@ class PredictiveMaintenanceAgent:
         now   = time.time()
 
         prio_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+        reason_summary = f"[{anomaly_type.upper()}] {len(anomalies)} sensor(s) anomalous: {', '.join(anomalies.keys())}"
+        self._update_priority_queue(mid, risk, reason_summary, prio)
+
+        should_schedule = (
+            (risk > AUTO_SCHEDULE_RISK and state.consecutive_anomalous >= AUTO_SCHEDULE_PERSIST)
+            or reading.get("status") == "fault"
+        )
+        if should_schedule:
+            await self._auto_schedule(mid, risk, reason_summary, prio)
+
         if (now - state.last_alert_ts < ALERT_COOLDOWN_SEC
                 and prio_rank.get(prio, 0) <= prio_rank.get(state.last_alert_priority, 0)
                 and reading.get("status") != "fault"):
@@ -376,7 +386,7 @@ class PredictiveMaintenanceAgent:
 
                             if confirmed and risk > 5:
                                 await self._handle_alert(mid, risk, anomalies, reading, anomaly_type)
-                            elif risk <= 5:
+                            else:
                                 self._update_priority_queue(mid, risk, "Normal", "info")
 
             except Exception as e:
