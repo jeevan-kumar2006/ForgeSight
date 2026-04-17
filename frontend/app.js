@@ -67,6 +67,24 @@ function initMachineCards() {
                     <div class="spark-label">Risk trend</div>
                     <svg class="spark-canvas" id="spark-${mid}" viewBox="0 0 240 72" preserveAspectRatio="none"></svg>
                 </div>
+                <div class="data-stats" id="stats-${mid}">
+                    <div class="stat-item">
+                        <span class="stat-label">Min</span>
+                        <span class="stat-value" id="stat-min-${mid}">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Max</span>
+                        <span class="stat-value" id="stat-max-${mid}">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Avg</span>
+                        <span class="stat-value" id="stat-avg-${mid}">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Current</span>
+                        <span class="stat-value" id="stat-current-${mid}">0</span>
+                    </div>
+                </div>
             </div>
             <div id="atype-${mid}" class="anomaly-type-badge at-none"></div>
             <div class="sensor-rows" id="sensors-${mid}">
@@ -171,6 +189,29 @@ function appendHistory(mid) {
     });
 }
 
+function updateDataStats(mid) {
+    const st = machineState[mid];
+    const history = st.history.risk;
+    
+    if (history.length === 0) {
+        document.getElementById(`stat-min-${mid}`).textContent = '0';
+        document.getElementById(`stat-max-${mid}`).textContent = '0';
+        document.getElementById(`stat-avg-${mid}`).textContent = '0';
+        document.getElementById(`stat-current-${mid}`).textContent = '0';
+        return;
+    }
+    
+    const min = Math.min(...history);
+    const max = Math.max(...history);
+    const avg = Math.round(history.reduce((a, b) => a + b, 0) / history.length);
+    const current = st.riskScore;
+    
+    document.getElementById(`stat-min-${mid}`).textContent = Math.round(min);
+    document.getElementById(`stat-max-${mid}`).textContent = Math.round(max);
+    document.getElementById(`stat-avg-${mid}`).textContent = avg;
+    document.getElementById(`stat-current-${mid}`).textContent = Math.round(current);
+}
+
 function updateMachineCard(mid) {
     const st = machineState[mid];
     const cls = riskClass(st.riskScore);
@@ -199,6 +240,7 @@ function updateMachineCard(mid) {
 
     appendHistory(mid);
     updateSparkline(mid);
+    updateDataStats(mid);
 
     SENSOR_FIELDS.forEach(f => {
         const range = SENSOR_RANGES[f];
