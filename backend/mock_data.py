@@ -18,8 +18,16 @@ BASELINES = {
     "CONVEYOR_04": {"temp": 45.0, "vib": 0.9,  "rpm":  720.0, "current":  8.5},
 }
 
+# Start each machine at a different phase so all periodic anomalies do not fire at t=0.
+INITIAL_TICKS = {
+    "CNC_01": 40,
+    "CNC_02": 90,
+    "PUMP_03": 60,
+    "CONVEYOR_04": 25,
+}
+
 # Module-level live state — persists across SSE ticks (mirrors server.js liveState)
-_live = {mid: {**b, "tick": 0} for mid, b in BASELINES.items()}
+_live = {mid: {**b, "tick": INITIAL_TICKS.get(mid, 0)} for mid, b in BASELINES.items()}
 
 
 def _r(lo, hi): return random.uniform(lo, hi)
@@ -54,7 +62,9 @@ def _next_live(machine_id: str) -> SensorReading:
         if temp > 110: status = MachineStatus.FAULT
 
     elif machine_id == "PUMP_03":
-        if random.random() < 0.04:
+        # Warm-up burst probability to avoid instant hard spikes at startup.
+        burst_prob = min(0.04, max(0.0, (s["tick"] - 30) / 300.0 * 0.04))
+        if random.random() < burst_prob:
             vib     += _r(1.5, 5)
             current += _r(0.5, 2)
         rpm -= 0.02
@@ -162,5 +172,9 @@ async def sse_stream_machine(machine_id: str) -> AsyncGenerator[str, None]:
         return
     while True:
         reading = sim.generate_live_reading()
+        # Keep history endpoint live by appending current stream readings.
+        sim.history_cache.append(reading)
+        if len(sim.history_cache) > 10081:
+            sim.history_cache.pop(0)
         yield f"data: {reading.model_dump_json()}\n\n"
         await asyncio.sleep(1.0)
