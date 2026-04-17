@@ -3,19 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ForgeSight — Predictive Maintenance Agent</title>
-    <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body>
-    <header class="top-bar">
-        <div class="top-bar-left">
-            <span class="logo-icon">&#9881;</span>
-            <div><!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ForgeSight — Predictive Maintenance Agent</title>
+    <title>ForgeSight - Predictive Maintenance Agent</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -24,10 +12,15 @@
             <span class="logo-icon">&#9881;</span>
             <div>
                 <h1>ForgeSight</h1>
-                <div class="top-bar-subtitle">Predictive maintenance command center</div>
+                <div class="top-bar-subtitle">Predictive Maintenance Command Center</div>
             </div>
         </div>
         <div class="top-bar-right">
+            <div class="feature-column">
+                <a class="feature-btn feature-history" href="/static/history.html" title="Open machine history dashboard">History</a>
+                <a class="feature-btn feature-noise" href="/static/noisefil.html" title="Open smart noise filtering visualization">Noise Filtering</a>
+                <a class="feature-btn feature-ai" href="#ai-reasoning-panel" title="Jump to AI reasoning panel">AI Reasoning</a>
+            </div>
             <div class="status-pill">
                 <span id="system-status" class="status-badge status-init">INITIALIZING</span>
                 <span id="connection-status" class="conn-dot conn-disconnected"></span>
@@ -35,22 +28,21 @@
         </div>
     </header>
 
-    <!-- STRETCH GOALS METRICS BAR -->
     <div class="metrics-bar">
         <div class="metric-item">
-            <span class="metric-label">AGENT UPTIME</span>
+            <span class="metric-label">Agent Uptime</span>
             <span id="metric-uptime" class="metric-value">0s</span>
         </div>
         <div class="metric-item">
-            <span class="metric-label">DYNAMIC BASELINES</span>
+            <span class="metric-label">Dynamic Baselines</span>
             <span id="metric-baselines" class="metric-value">Loading...</span>
         </div>
         <div class="metric-item">
-            <span class="metric-label">TRANSIENTS SUPPRESSED</span>
+            <span class="metric-label">Transient Noise Filtered</span>
             <span id="metric-suppressed" class="metric-value" style="color: var(--yellow)">0</span>
         </div>
         <div class="metric-item">
-            <span class="metric-label">ACTIVE ANOMALIES</span>
+            <span class="metric-label">Active Anomaly Types</span>
             <span id="metric-types" class="metric-value">None</span>
         </div>
     </div>
@@ -61,7 +53,7 @@
         <section class="bottom-panels">
             <div class="panel priority-panel">
                 <div class="panel-header">
-                    <h2>&#9650; Priority Queue (Risk Escalation)</h2>
+                    <h2>&#9650; Priority Queue (Highest Risk First)</h2>
                     <span id="pq-count" class="badge badge-muted">0</span>
                 </div>
                 <div class="panel-body" id="priority-queue">
@@ -74,6 +66,7 @@
                     <h2>&#128197; Scheduled Maintenance</h2>
                     <span id="maint-count" class="badge badge-muted">0</span>
                 </div>
+                <div id="maint-forwarding" class="maint-forwarding">Forwarding: waiting for data...</div>
                 <div class="panel-body" id="maintenance-schedule">
                     <p class="empty-state">No scheduled slots</p>
                 </div>
@@ -82,83 +75,21 @@
 
         <section class="panel alert-panel">
             <div class="panel-header">
-                <h2>&#128680; Alert Log & AI Reasoning</h2>
+                <h2>&#128680; Alert Log and Root-Cause Summary</h2>
                 <span id="alert-count" class="badge badge-muted">0</span>
             </div>
             <div class="panel-body alert-log-body" id="alert-log">
                 <p class="empty-state">Waiting for anomalies...</p>
             </div>
         </section>
-    </main>
 
-    <script src="/static/app.js"></script>
-</body>
-</html>
-
-                <h1>ForgeSight</h1>
-                <div class="top-bar-subtitle">Predictive maintenance command center</div>
-            </div>
-        </div>
-        <div class="top-bar-right">
-            <div class="status-pill">
-                <span id="system-status" class="status-badge status-init">INITIALIZING</span>
-                <span id="connection-status" class="conn-dot conn-disconnected"></span>
-            </div>
-        </div>
-    </header>
-
-    <!-- STRETCH GOALS METRICS BAR -->
-    <div class="metrics-bar">
-        <div class="metric-item">
-            <span class="metric-label">AGENT UPTIME</span>
-            <span id="metric-uptime" class="metric-value">0s</span>
-        </div>
-        <div class="metric-item">
-            <span class="metric-label">DYNAMIC BASELINES</span>
-            <span id="metric-baselines" class="metric-value">Loading...</span>
-        </div>
-        <div class="metric-item">
-            <span class="metric-label">TRANSIENTS SUPPRESSED</span>
-            <span id="metric-suppressed" class="metric-value" style="color: var(--yellow)">0</span>
-        </div>
-        <div class="metric-item">
-            <span class="metric-label">ACTIVE ANOMALIES</span>
-            <span id="metric-types" class="metric-value">None</span>
-        </div>
-    </div>
-
-    <main>
-        <section class="machines-grid" id="machines-grid"></section>
-
-        <section class="bottom-panels">
-            <div class="panel priority-panel">
-                <div class="panel-header">
-                    <h2>&#9650; Priority Queue (Risk Escalation)</h2>
-                    <span id="pq-count" class="badge badge-muted">0</span>
-                </div>
-                <div class="panel-body" id="priority-queue">
-                    <p class="empty-state">No escalations</p>
-                </div>
-            </div>
-
-            <div class="panel maintenance-panel">
-                <div class="panel-header">
-                    <h2>&#128197; Scheduled Maintenance</h2>
-                    <span id="maint-count" class="badge badge-muted">0</span>
-                </div>
-                <div class="panel-body" id="maintenance-schedule">
-                    <p class="empty-state">No scheduled slots</p>
-                </div>
-            </div>
-        </section>
-
-        <section class="panel alert-panel">
+        <section class="panel ai-panel" id="ai-reasoning-panel">
             <div class="panel-header">
-                <h2>&#128680; Alert Log & AI Reasoning</h2>
-                <span id="alert-count" class="badge badge-muted">0</span>
+                <h2>&#129504; AI Reasoning Panel</h2>
+                <span id="ai-insight-count" class="badge badge-muted">0</span>
             </div>
-            <div class="panel-body alert-log-body" id="alert-log">
-                <p class="empty-state">Waiting for anomalies...</p>
+            <div class="panel-body" id="ai-insight-log">
+                <p class="empty-state">AI insights will appear when alerts are triggered.</p>
             </div>
         </section>
     </main>
