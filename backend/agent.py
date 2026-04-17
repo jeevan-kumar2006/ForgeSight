@@ -8,9 +8,9 @@ from typing import Dict, List, Optional, Any
 
 from backend.models import (
     MachineBaseline, SensorBaseline, MaintenanceAlert, MaintenanceSlot,
-    PriorityItem, AgentReadingEvent, MachineStatus, NoiseFilterData,
+    PriorityItem, AgentReadingEvent, MachineStatus,
 )
-from backend.llm_client import generate_reasoning, generate_enhanced_reasoning
+from backend.llm_client import generate_reasoning
 
 MACHINE_IDS = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 SENSOR_FIELDS = ["temperature_C", "vibration_mm_s", "rpm", "current_A"]
@@ -235,9 +235,6 @@ class PredictiveMaintenanceAgent:
 
         bl = self.baseline_dict(mid)
         reasoning, is_llm = await generate_reasoning(mid, anomalies, risk, reading.get("status", "running"), bl)
-        
-        # Get enhanced reasoning with predictions
-        enhanced_data = await generate_enhanced_reasoning(mid, anomalies, risk, reading.get("status", "running"), bl)
 
         alert = {
             "alert_id":       str(uuid.uuid4())[:8],
@@ -250,13 +247,6 @@ class PredictiveMaintenanceAgent:
             "sensors_affected": list(anomalies.keys()),
             "is_llm":         is_llm,
             "timestamp":      datetime.now(timezone.utc).isoformat(),
-            # Enhanced AI reasoning fields
-            "root_cause_prediction": enhanced_data.get("root_cause_prediction"),
-            "suggested_fix": enhanced_data.get("suggested_fix"),
-            "time_to_failure_hours": enhanced_data.get("time_to_failure_hours"),
-            "confidence_score": enhanced_data.get("confidence_score"),
-            "similar_patterns_count": enhanced_data.get("similar_patterns_count"),
-            "detailed_analysis": enhanced_data.get("detailed_analysis"),
         }
         self.alerts.insert(0, alert)
         if len(self.alerts) > 200:
@@ -377,9 +367,6 @@ class PredictiveMaintenanceAgent:
                                 reading, self.baselines[mid], state
                             )
 
-                            # Generate noise filtering data
-                            noise_filter_data = generate_noise_filter_data(reading, self.baselines[mid], state)
-                            
                             event = AgentReadingEvent(
                                 machine_id=mid,
                                 timestamp=datetime.now(timezone.utc),
@@ -394,7 +381,6 @@ class PredictiveMaintenanceAgent:
                                 data_gap=False,
                                 anomaly_type=anomaly_type,
                                 suppressed_spikes=state.suppressed_spikes,
-                                noise_filter_data={k: v.model_dump() for k, v in noise_filter_data.items()},
                             )
                             await self.event_bus.publish("reading", event.model_dump())
 
