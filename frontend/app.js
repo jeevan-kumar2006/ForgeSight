@@ -65,6 +65,21 @@ function summarizeMachineState(st) {
     return 'Stable operation';
 }
 
+function getSensorVisualState(value, baseline) {
+    if (value == null || !baseline) return 'normal';
+    const lower = Number(baseline.lower);
+    const upper = Number(baseline.upper);
+    if (!Number.isFinite(lower) || !Number.isFinite(upper) || upper <= lower) return 'normal';
+
+    if (value < lower || value > upper) return 'anomalous';
+
+    // Soft warning band near the edges to improve readability before hard breach.
+    const span = upper - lower;
+    const warnBand = span * 0.1;
+    if (value < lower + warnBand || value > upper - warnBand) return 'warn';
+    return 'normal';
+}
+
 function initMachineCards() {
     const grid = document.getElementById('machines-grid');
     MACHINE_IDS.forEach(mid => {
@@ -124,10 +139,6 @@ function initMachineCards() {
                     <div class="sensor-row">
                         <span class="sensor-label">${SENSOR_RANGES[f].label}</span>
                         <span class="sensor-value" id="val-${mid}-${f}">--</span>
-                        <div class="sensor-bar-track" id="bar-${mid}-${f}">
-                            <div class="sensor-bar-safe"></div>
-                            <div class="sensor-bar-dot"></div>
-                        </div>
                     </div>
                 `).join('')}
             </div>
@@ -303,26 +314,13 @@ function updateMachineCard(mid) {
         const range = SENSOR_RANGES[f];
         const val = st.readings[f];
         const bl = st.baselines[f];
-        const isAnomalous = !!st.anomalies[f];
+        const visualState = getSensorVisualState(val, bl);
+        const isAnomalous = visualState === 'anomalous';
+        const isWarn = visualState === 'warn';
 
         const valEl = document.getElementById(`val-${mid}-${f}`);
         valEl.textContent = val != null ? `${val.toFixed(range.label === 'RPM' ? 0 : 1)}${range.unit}` : '--';
-        valEl.className = 'sensor-value' + (isAnomalous ? ' anomalous' : '');
-
-        const bar = document.getElementById(`bar-${mid}-${f}`);
-        const safeBar = bar.querySelector('.sensor-bar-safe');
-        const dot = bar.querySelector('.sensor-bar-dot');
-
-        if (bl && val != null) {
-            const totalRange = range.max - range.min;
-            const safeLeft = Math.max(0, ((bl.lower - range.min) / totalRange) * 100);
-            const safeWidth = Math.max(0, ((bl.upper - bl.lower) / totalRange) * 100);
-            const valPos = Math.max(0, Math.min(100, ((val - range.min) / totalRange) * 100));
-            safeBar.style.left = safeLeft + '%';
-            safeBar.style.width = safeWidth + '%';
-            dot.style.left = valPos + '%';
-            dot.className = 'sensor-bar-dot' + (isAnomalous ? ' anomalous' : '');
-        }
+        valEl.className = 'sensor-value' + (isAnomalous ? ' anomalous' : isWarn ? ' warn' : ' normal');
     });
     document.getElementById(`gap-${mid}`).style.display = st.dataGap ? 'flex' : 'none';
 }
@@ -539,7 +537,7 @@ function applyLiveMachineData(data) {
 
 async function pollLiveState() {
     try {
-        const resp = await fetch('/api/live-state');
+        const resp = await fetch(`/api/live-state?t=${Date.now()}`, { cache: 'no-store' });
         if (!resp.ok) return;
         const payload = await resp.json();
 
@@ -668,9 +666,9 @@ function connectSSE() {
             const resp = await fetch('/api/priority-queue');
             if (resp.ok) { priorityQueue = await resp.json(); updatePriorityQueue(); }
         } catch (_) {}
-    }, 2000); // Faster polling to catch escalations smoothly
+    }, 1000); // Keep queue freshness near real-time
 
-    setInterval(pollLiveState, 2000);
+    setInterval(pollLiveState, 1000);
 }
 
 async function initialLoad() {
