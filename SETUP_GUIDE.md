@@ -37,6 +37,121 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 
 The backend will be available at: `http://localhost:8000`
 
+### Optional: Enable Offline SMS Alerts (No Internet Required)
+
+ForgeSight now supports SMS delivery through a local GSM modem (USB dongle/SIM modem)
+using AT commands, so alerts can reach phones even when internet is unavailable.
+
+Set these environment variables before running `python run.py`:
+
+```bash
+export SMS_ENABLED=true
+export SMS_MODEM_PORT=/dev/ttyUSB0
+export SMS_BAUDRATE=115200
+export SMS_RECIPIENTS="+919999999999,+918888888888"
+export SMS_SENDER="ForgeSight"
+```
+
+Notes:
+- `SMS_RECIPIENTS` is comma-separated.
+- SMS is sent for `high` and `critical` alerts.
+- Ensure the modem has a valid SIM and cellular signal.
+- If your modem path differs, check `dmesg | grep tty`.
+
+### Optional: Enable Twilio SMS (Internet-based)
+
+You can send SMS using Twilio when modem access is unavailable.
+
+```bash
+export SMS_PROVIDER=twilio
+export TWILIO_ENABLED=true
+export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+export TWILIO_AUTH_TOKEN="your_auth_token"
+export TWILIO_FROM_NUMBER="+1XXXXXXXXXX"
+export SMS_RECIPIENTS="+917019663193,+917411233628"
+```
+
+Provider modes:
+- `SMS_PROVIDER=modem`: only GSM modem
+- `SMS_PROVIDER=webhook`: HTTP webhook (good for phone notification apps on Ethernet/Wi-Fi)
+- `SMS_PROVIDER=twilio`: only Twilio
+- `SMS_PROVIDER=auto`: modem first, then webhook, then Twilio fallback
+
+### Optional: Enable Ethernet-Friendly Phone Alerts (Webhook)
+
+If your phone receives notifications through network data (Ethernet/Wi-Fi/internet),
+you can use webhook alerts instead of GSM modem SMS.
+
+```bash
+export SMS_PROVIDER=webhook
+export WEBHOOK_ENABLED=true
+export ALERT_WEBHOOK_URL="https://your-alert-endpoint.example.com/notify"
+export ALERT_WEBHOOK_BEARER="replace_with_secure_token"
+export ALERT_WEBHOOK_TIMEOUT_SEC=8
+```
+
+Safety guidance:
+- Prefer `https://` endpoints.
+- Use a bearer token (`ALERT_WEBHOOK_BEARER`) and rotate it periodically.
+- Do not commit tokens to git; keep them in environment variables.
+- If using LAN-only endpoint, firewall it to trusted IPs.
+
+Example with your numbers:
+
+```bash
+export SMS_RECIPIENTS="+917019663193,+917411233628"
+```
+
+### Run only SMS test (without full backend)
+
+After setting SMS env vars, you can send a test SMS directly:
+
+```bash
+python -m backend.sms_alert --machine CNC_01 --priority high --risk 78 --reason "Manual GSM SMS test"
+```
+
+Twilio-only test:
+
+```bash
+python -m backend.sms_alert --provider twilio --machine CNC_01 --priority high --risk 78 --reason "Manual Twilio SMS test"
+```
+
+Webhook-only test:
+
+```bash
+python -m backend.sms_alert --provider webhook --machine CNC_01 --priority high --risk 78 --reason "Manual webhook alert test"
+```
+
+### Run with `run.py` simultaneously
+
+Yes. The normal production flow is to run only:
+
+```bash
+python run.py
+```
+
+In this mode, SMS is sent automatically for `high` and `critical` alerts. You do **not** need to run `sms_alert.py` separately.
+
+If you still want both at once (for validation):
+- Terminal 1: `python run.py`
+- Terminal 2: run the test command above
+
+## Verify Maintenance Scheduler Is Going Through API
+
+The auto scheduler now forwards slots to `/schedule-maintenance` with source tag `agent_forwarded`.
+If forwarding fails, it stores local fallback slots tagged `agent_local_fallback`.
+
+Check status:
+
+```bash
+curl -s http://localhost:8000/api/maintenance-forwarding-status
+```
+
+What to verify in response:
+- `forwarding.api_success` should increase when API forwarding works
+- `forwarding.api_failure` and `forwarding.local_fallback` should stay low
+- `recent_slots[].source` should mostly be `agent_forwarded`
+
 ## Step 3: Start the Telegram Bot
 
 Open a second terminal and run:
