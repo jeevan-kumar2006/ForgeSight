@@ -8,8 +8,11 @@ const SENSOR_RANGES = {
 };
 const SENSOR_FIELDS = ['temperature_C', 'vibration_mm_s', 'rpm', 'current_A'];
 const MAX_HISTORY = 36;
+const SPARK_WIDTH = 240;
+const SPARK_HEIGHT = 72;
+const SPARK_MARGIN = 12;
 
-const machineState = {};
+const machineState = {}; 
 MACHINE_IDS.forEach(mid => {
     machineState[mid] = {
         riskScore: 0,
@@ -62,7 +65,7 @@ function initMachineCards() {
             <div class="graph-card">
                 <div class="spark-wrap">
                     <div class="spark-label">Risk trend</div>
-                    <svg class="spark-canvas" id="spark-${mid}" viewBox="0 0 180 42" preserveAspectRatio="none"></svg>
+                    <svg class="spark-canvas" id="spark-${mid}" viewBox="0 0 240 72" preserveAspectRatio="none"></svg>
                 </div>
             </div>
             <div id="atype-${mid}" class="anomaly-type-badge at-none"></div>
@@ -88,14 +91,16 @@ function riskClass(score) { return score > 75 ? 'critical' : score > 50 ? 'high'
 function riskLabel(cls) { return { normal: 'Normal', low: 'Low', medium: 'Moderate', high: 'High', critical: 'Critical' }[cls] || 'Normal'; }
 function riskColor(cls) { return { normal: 'var(--green)', low: 'var(--green)', medium: 'var(--yellow)', high: 'var(--orange)', critical: 'var(--red)' }[cls] || 'var(--green)'; }
 
-function normalizeHistory(values, height) {
+function normalizeHistory(values, width, height, margin) {
     if (!values.length) return '';
     const min = Math.min(...values);
     const max = Math.max(...values);
     const span = max - min || 1;
+    const availableHeight = height - margin * 2;
+    const availableWidth = width - margin * 2;
     return values.map((value, index) => {
-        const x = (index / Math.max(1, values.length - 1)) * 100;
-        const y = height - ((value - min) / span) * height;
+        const x = margin + (index / Math.max(1, values.length - 1)) * availableWidth;
+        const y = margin + ((max - value) / span) * availableHeight;
         return `${x},${y}`;
     }).join(' ');
 }
@@ -105,32 +110,50 @@ function updateSparkline(mid) {
     const history = machineState[mid].history.risk;
     if (!svg) return;
     svg.innerHTML = '';
+
+    const baseline = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    baseline.setAttribute('x1', `${SPARK_MARGIN}`);
+    baseline.setAttribute('y1', `${SPARK_HEIGHT - SPARK_MARGIN}`);
+    baseline.setAttribute('x2', `${SPARK_WIDTH - SPARK_MARGIN}`);
+    baseline.setAttribute('y2', `${SPARK_HEIGHT - SPARK_MARGIN}`);
+    baseline.setAttribute('stroke', 'rgba(255,255,255,0.08)');
+    baseline.setAttribute('stroke-width', '1');
+    svg.appendChild(baseline);
+
     if (history.length < 2) {
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', '5'); line.setAttribute('y1', '21');
-        line.setAttribute('x2', '175'); line.setAttribute('y2', '21');
-        line.setAttribute('stroke', 'rgba(90,106,132,0.45)'); line.setAttribute('stroke-width', '1');
+        line.setAttribute('x1', `${SPARK_MARGIN}`);
+        line.setAttribute('y1', `${SPARK_HEIGHT / 2}`);
+        line.setAttribute('x2', `${SPARK_WIDTH - SPARK_MARGIN}`);
+        line.setAttribute('y2', `${SPARK_HEIGHT / 2}`);
+        line.setAttribute('stroke', 'rgba(90,106,132,0.45)');
+        line.setAttribute('stroke-width', '2');
         svg.appendChild(line);
         return;
     }
 
+    const pathData = normalizeHistory(history, SPARK_WIDTH, SPARK_HEIGHT, SPARK_MARGIN);
     const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-    polyline.setAttribute('points', normalizeHistory(history, 38));
+    polyline.setAttribute('points', pathData);
     polyline.setAttribute('fill', 'none');
-    polyline.setAttribute('stroke', 'rgba(0,245,196,0.95)');
-    polyline.setAttribute('stroke-width', '2');
+    polyline.setAttribute('stroke', 'rgba(0,245,196,0.98)');
+    polyline.setAttribute('stroke-width', '3');
     polyline.setAttribute('stroke-linecap', 'round');
     polyline.setAttribute('stroke-linejoin', 'round');
     svg.appendChild(polyline);
 
-    const area = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    const points = history.map((value, index) => {
-        const x = (index / Math.max(1, history.length - 1)) * 180;
-        const y = 42 - ((value - Math.min(...history)) / (Math.max(...history) - Math.min(...history) || 1)) * 38;
+    const min = Math.min(...history);
+    const max = Math.max(...history);
+    const span = max - min || 1;
+    const linePoints = history.map((value, index) => {
+        const x = SPARK_MARGIN + (index / Math.max(1, history.length - 1)) * (SPARK_WIDTH - SPARK_MARGIN * 2);
+        const y = SPARK_MARGIN + ((max - value) / span) * (SPARK_HEIGHT - SPARK_MARGIN * 2);
         return `${x},${y}`;
     }).join(' L ');
-    area.setAttribute('d', `M 0 42 L ${points} L 180 42 Z`);
-    area.setAttribute('fill', 'rgba(0,245,196,0.12)');
+
+    const area = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    area.setAttribute('d', `M ${SPARK_MARGIN} ${SPARK_HEIGHT - SPARK_MARGIN} L ${linePoints} L ${SPARK_WIDTH - SPARK_MARGIN} ${SPARK_HEIGHT - SPARK_MARGIN} Z`);
+    area.setAttribute('fill', 'rgba(0,245,196,0.16)');
     svg.insertBefore(area, polyline);
 }
 
@@ -265,6 +288,7 @@ function addAlertItem(alert) {
     const prioCls = `badge-${alert.priority || 'info'}`;
     const isDataLink = alert.sensors_affected && alert.sensors_affected.includes('_data_link');
     const isLlm = alert.is_llm;
+    const reasoningText = alert.llm_reasoning || alert.reason_summary || 'No reasoning available.';
 
     const item = document.createElement('div');
     item.className = 'alert-item';
@@ -277,7 +301,7 @@ function addAlertItem(alert) {
             <span class="reasoning-tag ${isLlm ? 'tag-ai' : 'tag-rule'}">${isLlm ? 'AI REASONING' : 'RULE-BASED'}</span>
         </div>
         <div class="alert-reason">${alert.reason_summary}</div>
-        <div class="alert-llm">${alert.llm_reasoning}</div>
+        <div class="alert-llm">${reasoningText}</div>
     `;
     container.prepend(item);
     while (container.children.length > 80) container.removeChild(container.lastChild);
