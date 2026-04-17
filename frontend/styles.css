@@ -166,7 +166,7 @@ main {
 }
 .risk-gauge-value { color: var(--gauge-color); }
 
-.graph-card { margin-bottom: 16px; padding: 12px 0 0; }
+.graph-card { margin-bottom: 14px; padding: 0; background: rgba(255,255,255,0.01); border-radius: 18px; overflow: hidden; border: 1px solid rgba(0,245,196,0.1); }
 .data-gap-overlay {
   position: absolute; inset: 0; display: none;
   background: rgba(8,11,18,0.85); border-radius: var(--radius);
@@ -320,13 +320,50 @@ main {
 
 /* Sparkline */
 .spark-wrap {
-  border-top: 1px solid var(--border);
-  padding: 14px;
-  background: rgba(255,255,255,0.02);
-  border-radius: 18px;
+  border-top: none;
+  padding: 14px 14px 10px 14px;
+  background: transparent;
+  border-radius: 18px 18px 0 0;
 }
 .spark-label { font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
 .spark-canvas { width: 100%; height: 80px; min-height: 80px; display: block; background: transparent; }
+
+/* Data Statistics Section */
+.data-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 12px;
+  background: rgba(0,245,196,0.05);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0 0 18px 18px;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 8px;
+  border: 1px solid rgba(0,245,196,0.15);
+}
+
+.stat-label {
+  font-size: 0.58rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.stat-value {
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--green);
+}
 
 /* Data-gap overlay */
 .gap-overlay {
