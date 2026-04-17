@@ -82,11 +82,27 @@ main {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
-  padding: 14px 16px;
+  padding: 18px 20px;
 }
-.metric-label { display: block; font-size: 0.68rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 10px; }
-.metric-value { font-family: var(--mono); font-size: 1rem; font-weight: 700; color: #fff; }
+.metric-label { display: block; font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 12px; }
+.metric-value { font-family: var(--mono); font-size: 1.18rem; font-weight: 800; color: #fff; }
 .metric-value span { color: var(--yellow); }
+
+.alert-item {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius-sm); padding: 16px 18px; margin-bottom: 14px;
+  animation: fadeIn 0.3s ease;
+}
+.alert-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.alert-time { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); }
+.alert-mid  { font-size: 0.82rem; font-weight: 700; color: var(--text); }
+.alert-reason { font-size: 0.88rem; color: var(--text); font-weight: 700; margin-bottom: 8px; }
+.alert-llm {
+  font-size: 0.78rem; color: var(--muted); line-height: 1.6;
+  border-left: 2px solid var(--border2); padding-left: 10px;
+  font-family: var(--mono);
+}
 
 .conn-dot {
   width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: background 0.4s, box-shadow 0.4s;
@@ -303,9 +319,14 @@ main {
 .sensor-bar-dot.anomalous { background: var(--red); box-shadow: 0 0 6px var(--red); }
 
 /* Sparkline */
-.spark-wrap { border-top: 1px solid var(--border); padding-top: 10px; }
-.spark-label { font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
-.spark-canvas { width: 100%; height: 36px; display: block; }
+.spark-wrap {
+  border-top: 1px solid var(--border);
+  padding: 14px;
+  background: rgba(255,255,255,0.02);
+  border-radius: 18px;
+}
+.spark-label { font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+.spark-canvas { width: 100%; height: 80px; min-height: 80px; display: block; background: transparent; }
 
 /* Data-gap overlay */
 .gap-overlay {
