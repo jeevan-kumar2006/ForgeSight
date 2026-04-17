@@ -1,228 +1,166 @@
+"""
+mock_data.py
+Live sensor simulation matching the Hack Malendau 2026 generate-history.js spec.
+Each machine has its own live state that drifts over time (mirrors server.js nextLiveReading).
+"""
 import asyncio
 import random
-import math
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from backend.models import SensorReading, MachineStatus
 
-# ── Machine configs sourced from Hack Malendau 2026 generate-history.js ────────
-# Machine IDs and baselines match the hackathon simulation server exactly.
+MACHINES = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 
-MACHINE_CONFIGS = {
-    "CNC_01": {
-        "name": "CNC Machine #1",
-        # Baseline from BASELINES.CNC_01 in generate-history.js
-        "temp_base": 72.0,  "temp_pct": 0.03,
-        "vib_base":  1.8,   "vib_pct":  0.04,
-        "rpm_base":  1480.0,"rpm_pct":  0.015,
-        "curr_base": 12.5,  "curr_pct": 0.03,
-        # Anomaly: gradual bearing wear — vib + temp climb over last 3 days
-        "anomaly_type": "bearing_wear",
-    },
-    "CNC_02": {
-        "name": "CNC Machine #2",
-        # Baseline from BASELINES.CNC_02
-        "temp_base": 68.0,  "temp_pct": 0.03,
-        "vib_base":  1.5,   "vib_pct":  0.04,
-        "rpm_base":  1490.0,"rpm_pct":  0.015,
-        "curr_base": 11.8,  "curr_pct": 0.03,
-        # Anomaly: thermal runaway in afternoon shift; fault event on day 1
-        "anomaly_type": "thermal_spike",
-    },
-    "PUMP_03": {
-        "name": "Pump #3",
-        # Baseline from BASELINES.PUMP_03
-        "temp_base": 55.0,  "temp_pct": 0.03,
-        "vib_base":  2.2,   "vib_pct":  0.04,
-        "rpm_base":  2950.0,"rpm_pct":  0.015,
-        "curr_base": 18.0,  "curr_pct": 0.03,
-        # Anomaly: cavitation bursts + slow RPM drop (developing clog)
-        "anomaly_type": "cavitation",
-    },
-    "CONVEYOR_04": {
-        "name": "Conveyor #4",
-        # Baseline from BASELINES.CONVEYOR_04
-        "temp_base": 45.0,  "temp_pct": 0.03,
-        "vib_base":  0.9,   "vib_pct":  0.04,
-        "rpm_base":  720.0, "rpm_pct":  0.015,
-        "curr_base": 8.5,   "curr_pct": 0.03,
-        # Mostly healthy; one brief warning period
-        "anomaly_type": "healthy",
-    },
+BASELINES = {
+    "CNC_01":      {"temp": 72.0, "vib": 1.8,  "rpm": 1480.0, "current": 12.5},
+    "CNC_02":      {"temp": 68.0, "vib": 1.5,  "rpm": 1490.0, "current": 11.8},
+    "PUMP_03":     {"temp": 55.0, "vib": 2.2,  "rpm": 2950.0, "current": 18.0},
+    "CONVEYOR_04": {"temp": 45.0, "vib": 0.9,  "rpm":  720.0, "current":  8.5},
 }
 
+# Module-level live state — persists across SSE ticks (mirrors server.js liveState)
+_live = {mid: {**b, "tick": 0} for mid, b in BASELINES.items()}
 
-def _noise(base: float, pct: float) -> float:
-    """Gaussian noise ±pct% of base, matching the JS noise() helper."""
-    return base + random.uniform(-base * pct, base * pct)
+
+def _r(lo, hi): return random.uniform(lo, hi)
+def _fix(n, d=2): return round(n, d)
+
+
+def _next_live(machine_id: str) -> SensorReading:
+    s = _live[machine_id]
+    b = BASELINES[machine_id]
+    s["tick"] += 1
+    status = MachineStatus.RUNNING
+
+    # Mean-reversion + noise (mirrors server.js exactly)
+    temp    = s["temp"]    + (b["temp"]    - s["temp"])    * 0.02 + _r(-0.4,  0.4)
+    vib     = s["vib"]     + (b["vib"]     - s["vib"])     * 0.02 + _r(-0.05, 0.05)
+    rpm     = s["rpm"]     + (b["rpm"]     - s["rpm"])     * 0.02 + _r(-8,    8)
+    current = s["current"] + (b["current"] - s["current"]) * 0.02 + _r(-0.15, 0.15)
+
+    if machine_id == "CNC_01":
+        ramp = min(s["tick"] / (5 * 60), 1.0)
+        vib     += ramp * 0.004
+        temp    += ramp * 0.01
+        current += ramp * 0.005
+        if vib > 3.5: status = MachineStatus.WARNING
+        if vib > 5.5: status = MachineStatus.FAULT
+
+    elif machine_id == "CNC_02":
+        if s["tick"] % 180 < 20:
+            temp    += _r(5,  18)
+            current += _r(1,   4)
+        if temp > 95:  status = MachineStatus.WARNING
+        if temp > 110: status = MachineStatus.FAULT
+
+    elif machine_id == "PUMP_03":
+        if random.random() < 0.04:
+            vib     += _r(1.5, 5)
+            current += _r(0.5, 2)
+        rpm -= 0.02
+        if vib > 5 or rpm < 2800: status = MachineStatus.WARNING
+
+    elif machine_id == "CONVEYOR_04":
+        if random.random() < 0.005:
+            vib    += _r(0.5, 1.5)
+            status  = MachineStatus.WARNING
+
+    temp    = max(20.0, min(130.0, temp))
+    vib     = max(0.1,  min(12.0,  vib))
+    rpm     = max(100.0, min(4000.0, rpm))
+    current = max(1.0,  min(30.0,  current))
+
+    s["temp"] = temp; s["vib"] = vib; s["rpm"] = rpm; s["current"] = current
+
+    return SensorReading(
+        machine_id=machine_id,
+        timestamp=datetime.now(timezone.utc),
+        temperature_C=_fix(temp),
+        vibration_mm_s=_fix(vib, 3),
+        rpm=_fix(rpm, 0),
+        current_A=_fix(current),
+        status=status,
+    )
 
 
 class MachineSimulator:
-    def __init__(self, machine_id: str, cfg: dict):
+    """Holds 10 080-reading 7-day history; delegates live reads to module-level state."""
+
+    def __init__(self, machine_id: str):
         self.machine_id = machine_id
-        self.cfg = cfg
-        self.tick = 0
         self.history_cache: list[SensorReading] = []
         self._generate_history()
 
     def _generate_history(self):
-        """
-        Generate 7 days of historical data sampled every 60 seconds (= 10 080 readings).
-        Mirrors the generateAllHistory() / generateReading() logic from generate-history.js.
-        """
         now = datetime.now(timezone.utc)
-        total_minutes = 7 * 24 * 60  # 10 080 minutes
-        for i in range(total_minutes + 1):
-            offset_min = total_minutes - i
-            ts = now - timedelta(minutes=offset_min)
-            day_offset = offset_min // (24 * 60)   # 0 = today, 6 = oldest
-            seconds_into_day = (ts.hour * 3600 + ts.minute * 60 + ts.second)
-            progress = seconds_into_day / 86400.0   # 0.0–1.0 position within the day
-            self.history_cache.append(
-                self._make_reading(ts, day_offset=day_offset, progress=progress, is_history=True)
-            )
+        b   = BASELINES[self.machine_id]
+        TOTAL_MIN = 7 * 24 * 60  # 10 080
 
-    def _make_reading(
-        self,
-        ts: datetime,
-        day_offset: int = 0,
-        progress: float = 0.0,
-        is_history: bool = False,
-    ) -> SensorReading:
-        cfg = self.cfg
-        temp    = _noise(cfg["temp_base"],  cfg["temp_pct"])
-        vib     = _noise(cfg["vib_base"],   cfg["vib_pct"])
-        rpm     = _noise(cfg["rpm_base"],   cfg["rpm_pct"])
-        current = _noise(cfg["curr_base"],  cfg["curr_pct"])
-        status  = MachineStatus.RUNNING
+        for i in range(TOTAL_MIN + 1):
+            offset_min = TOTAL_MIN - i
+            ts         = now - timedelta(minutes=offset_min)
+            day_offset = offset_min // (24 * 60)
+            progress   = (ts.hour * 3600 + ts.minute * 60 + ts.second) / 86400.0
 
-        anomaly = cfg["anomaly_type"]
+            temp    = b["temp"]    + _r(-b["temp"]    * 0.03, b["temp"]    * 0.03)
+            vib     = b["vib"]     + _r(-b["vib"]     * 0.04, b["vib"]     * 0.04)
+            rpm     = b["rpm"]     + _r(-b["rpm"]     * 0.015, b["rpm"]    * 0.015)
+            current = b["current"] + _r(-b["current"] * 0.03, b["current"] * 0.03)
+            status  = MachineStatus.RUNNING
 
-        # ── CNC_01 — Gradual bearing wear ─────────────────────────────────────
-        # Mirrors: degradeDays = max(0, 3 - dayOffset); d = degradeDays / 3
-        if anomaly == "bearing_wear":
-            degrade_days = max(0, 3 - day_offset)
-            d = degrade_days / 3.0
-            vib     += d * 3.5
-            temp    += d * 12.0
-            current += d * 2.5
-            if d > 0.6:
-                status = MachineStatus.WARNING
-            if d > 0.9 and progress > 0.8:
-                status = MachineStatus.FAULT
+            if self.machine_id == "CNC_01":
+                d = max(0, 3 - day_offset) / 3.0
+                vib += d * 3.5; temp += d * 12.0; current += d * 2.5
+                if d > 0.6: status = MachineStatus.WARNING
+                if d > 0.9 and progress > 0.8: status = MachineStatus.FAULT
 
-        # ── CNC_02 — Thermal runaway / afternoon spike ─────────────────────────
-        # Mirrors: afternoon = progress > 0.5 && progress < 0.75
-        elif anomaly == "thermal_spike":
-            afternoon = 0.5 < progress < 0.75
-            if afternoon and day_offset < 2:
-                temp    += random.uniform(15, 30)
-                current += random.uniform(2, 5)
-                if temp > 95:
-                    status = MachineStatus.WARNING
-            # Fault event on day 1, between 60–65 % of the day
-            if day_offset == 1 and 0.60 < progress < 0.65:
-                temp    = 112 + random.uniform(0, 8)
-                current = 22  + random.uniform(0, 3)
-                status  = MachineStatus.FAULT
-
-            # Live drift after history: periodic thermal spikes every 3 min
-            if not is_history:
-                self.tick += 1
-                if self.tick % 180 < 20:
-                    temp    += random.uniform(5, 18)
-                    current += random.uniform(1, 4)
-                if temp > 95:
-                    status = MachineStatus.WARNING
-                if temp > 110:
+            elif self.machine_id == "CNC_02":
+                if 0.5 < progress < 0.75 and day_offset < 2:
+                    temp += _r(15, 30); current += _r(2, 5)
+                    if temp > 95: status = MachineStatus.WARNING
+                if day_offset == 1 and 0.60 < progress < 0.65:
+                    temp = 112 + _r(0, 8); current = 22 + _r(0, 3)
                     status = MachineStatus.FAULT
 
-        # ── PUMP_03 — Cavitation bursts + gradual RPM drop ─────────────────────
-        # Mirrors: random < 0.08 burst; rpmDrop = ((7 - dayOffset) / 7) * 180
-        elif anomaly == "cavitation":
-            if random.random() < 0.08:
-                vib     += random.uniform(2, 6)
-                current += random.uniform(1, 3)
-                if vib > 6:
-                    status = MachineStatus.WARNING
-            rpm_drop = ((7 - day_offset) / 7.0) * 180
-            rpm -= rpm_drop
-            if rpm < 2820:
-                status = MachineStatus.WARNING
+            elif self.machine_id == "PUMP_03":
+                if random.random() < 0.08:
+                    vib += _r(2, 6); current += _r(1, 3)
+                    if vib > 6: status = MachineStatus.WARNING
+                rpm -= ((7 - day_offset) / 7.0) * 180
+                if rpm < 2820: status = MachineStatus.WARNING
 
-            # Live: random cavitation bursts + slow RPM decline
-            if not is_history:
-                self.tick += 1
-                if random.random() < 0.04:
-                    vib     += random.uniform(1.5, 5)
-                    current += random.uniform(0.5, 2)
-                rpm -= 0.02  # very slow clog build-up
-                if vib > 5 or rpm < 2800:
-                    status = MachineStatus.WARNING
+            elif self.machine_id == "CONVEYOR_04":
+                if day_offset == 4 and 0.40 < progress < 0.45:
+                    vib += _r(1, 2); status = MachineStatus.WARNING
 
-        # ── CONVEYOR_04 — Mostly healthy ───────────────────────────────────────
-        # One brief warning 4 days ago (day_offset == 4, progress 0.40–0.45)
-        elif anomaly == "healthy":
-            if day_offset == 4 and 0.40 < progress < 0.45:
-                vib    += random.uniform(1, 2)
-                status  = MachineStatus.WARNING
-            # Live: rare random walk spikes
-            if not is_history:
-                self.tick += 1
-                if random.random() < 0.005:
-                    vib    += random.uniform(0.5, 1.5)
-                    status  = MachineStatus.WARNING
+            temp    = max(20.0, min(130.0, temp))
+            vib     = max(0.1,  min(12.0,  vib))
+            rpm     = max(100.0, min(4000.0, rpm))
+            current = max(1.0,  min(30.0,  current))
 
-        # ── Clamp values to physical limits ────────────────────────────────────
-        temp    = max(20.0,  min(130.0, temp))
-        vib     = max(0.1,   min(12.0,  vib))
-        rpm     = max(100.0, min(4000.0, rpm))
-        current = max(1.0,   min(30.0,  current))
-
-        return SensorReading(
-            machine_id=self.machine_id,
-            timestamp=ts,
-            temperature_C=round(temp, 2),
-            vibration_mm_s=round(vib, 3),
-            rpm=round(rpm, 1),
-            current_A=round(current, 2),
-            status=status,
-        )
+            self.history_cache.append(SensorReading(
+                machine_id=self.machine_id, timestamp=ts,
+                temperature_C=_fix(temp), vibration_mm_s=_fix(vib, 3),
+                rpm=_fix(rpm, 0), current_A=_fix(current), status=status,
+            ))
 
     def generate_live_reading(self) -> SensorReading:
-        """
-        Live reading, mirrors nextLiveReading() in server.js.
-        day_offset=0 (today) and progress based on current time.
-        """
-        now = datetime.now(timezone.utc)
-        seconds_into_day = now.hour * 3600 + now.minute * 60 + now.second
-        progress = seconds_into_day / 86400.0
-        return self._make_reading(now, day_offset=0, progress=progress, is_history=False)
+        return _next_live(self.machine_id)
 
     def get_history(self) -> list[SensorReading]:
         return list(self.history_cache)
 
 
-# ── Simulators keyed by hackathon machine ID ───────────────────────────────────
-simulators: dict[str, MachineSimulator] = {
-    mid: MachineSimulator(mid, cfg) for mid, cfg in MACHINE_CONFIGS.items()
-}
+# One simulator per machine — imported by main.py
+simulators: dict[str, MachineSimulator] = {mid: MachineSimulator(mid) for mid in MACHINES}
 
 
 async def sse_stream_machine(machine_id: str) -> AsyncGenerator[str, None]:
-    """SSE generator yielding one reading per second for a given machine."""
     sim = simulators.get(machine_id)
     if not sim:
         yield f'data: {{"error": "unknown machine {machine_id}"}}\n\n'
         return
-
     while True:
-        # CONVEYOR_04 simulates occasional data gaps (matches M-004 behaviour)
-        if machine_id == "CONVEYOR_04" and random.random() < 0.015:
-            gap_seconds = random.uniform(5, 12)
-            await asyncio.sleep(gap_seconds)
-            continue
-
         reading = sim.generate_live_reading()
         yield f"data: {reading.model_dump_json()}\n\n"
         await asyncio.sleep(1.0)
