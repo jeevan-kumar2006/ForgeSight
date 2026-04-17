@@ -12,7 +12,7 @@ from backend.models import (
 )
 from backend.llm_client import generate_reasoning
 
-MACHINE_IDS = ["M-001", "M-002", "M-003", "M-004"]
+MACHINE_IDS = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 SENSOR_FIELDS = ["temperature_C", "vibration_mm_s", "rpm", "current_A"]
 BASE_URL = "http://localhost:8000"
 
@@ -25,7 +25,7 @@ DATA_GAP_CRIT_SEC = 15.0
 ALERT_COOLDOWN_SEC = 60.0
 AUTO_SCHEDULE_RISK = 60.0   # FIXED: Lowered to allow auto-scheduling
 AUTO_SCHEDULE_PERSIST = 2
-BASELINE_HISTORY_SAMPLES = 2016
+BASELINE_HISTORY_SAMPLES = 10080  # 1 reading/min × 7 days, matches hackathon generate-history.js
 
 def compute_sensor_baseline(values: List[float]) -> SensorBaseline:
     sorted_v = sorted(values)
