@@ -49,6 +49,13 @@ class MaintenanceAlert(BaseModel):
     is_llm: bool = False
     anomaly_type: str = "none"
     timestamp: datetime
+    # Enhanced AI reasoning fields
+    root_cause_prediction: Optional[str] = None
+    suggested_fix: Optional[str] = None
+    time_to_failure_hours: Optional[float] = None
+    confidence_score: Optional[float] = None
+    similar_patterns_count: Optional[int] = None
+    detailed_analysis: Optional[str] = None
 
 
 class MaintenanceSlot(BaseModel):
@@ -68,6 +75,14 @@ class PriorityItem(BaseModel):
     since: datetime
 
 
+class NoiseFilterData(BaseModel):
+    raw_value: float
+    filtered_value: float
+    ai_interpreted_value: float
+    was_spike_suppressed: bool = False
+    confidence: float = 0.0
+
+
 class AgentReadingEvent(BaseModel):
     machine_id: str
     timestamp: datetime
@@ -82,3 +97,5 @@ class AgentReadingEvent(BaseModel):
     data_gap: bool
     anomaly_type: str = "none"
     suppressed_spikes: int = 0
+    # Enhanced noise filtering data
+    noise_filter_data: Dict[str, NoiseFilterData] = {}
