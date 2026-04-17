@@ -63,9 +63,14 @@ async def raise_alert(request: Request):
 @app.post("/schedule-maintenance")
 async def schedule_maintenance(request: Request):
     body = await request.json()
+    api_request_id = str(uuid.uuid4())[:8]
     slot = {
         "slot_id": str(uuid.uuid4())[:8],
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "api_received_at": datetime.now(timezone.utc).isoformat(),
+        "api_request_id": api_request_id,
+        "accepted_by_api": True,
+        "source": body.get("source", "api"),
         **body,
     }
     agent.maintenance_slots.append(slot)
@@ -106,6 +111,19 @@ async def get_priority_queue():
 @app.get("/api/maintenance")
 async def get_maintenance():
     return agent.maintenance_slots
+
+@app.get("/api/maintenance-forwarding-status")
+async def get_maintenance_forwarding_status():
+    return {
+        "forwarding": agent.maintenance_forwarding_stats,
+        "recent_slots": agent.maintenance_slots[:10],
+    }
+
+@app.get("/api/live-state")
+async def get_live_state():
+    snapshot = agent.live_snapshot()
+    snapshot["timestamp"] = datetime.now(timezone.utc).isoformat()
+    return snapshot
 
 @app.get("/api/baselines/{machine_id}")
 async def get_baselines(machine_id: str):
