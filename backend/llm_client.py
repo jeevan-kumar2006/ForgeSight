@@ -14,18 +14,41 @@ def _template_reasoning(
     status: str,
     baselines: dict,
 ) -> str:
+    def parse_range(expected_range):
+        if isinstance(expected_range, str):
+            for sep in ['–', '-', 'to']:
+                if sep in expected_range:
+                    parts = expected_range.replace('to', '–').split('–') if sep == 'to' else expected_range.split(sep)
+                    if len(parts) == 2:
+                        try:
+                            return float(parts[0]), float(parts[1])
+                        except ValueError:
+                            return None, None
+        elif isinstance(expected_range, (list, tuple)) and len(expected_range) == 2:
+            try:
+                return float(expected_range[0]), float(expected_range[1])
+            except ValueError:
+                return None, None
+        return None, None
+
     parts = []
     for sensor, info in anomalies.items():
         name = sensor.replace("_", " ").title()
         val = info["value"]
         dev = info["deviation_std"]
-        lo, hi = info["expected_range"]
+        lo, hi = parse_range(info.get("expected_range", ""))
         if info["direction"] == "above":
-            parts.append(f"{name} reads {val:.1f}, exceeding the upper bound of {hi:.1f} by {dev:.1f} standard deviations")
+            if lo is not None and hi is not None:
+                parts.append(f"{name} reads {val:.1f}, exceeding the upper bound of {hi:.1f} by {dev:.1f} standard deviations")
+            else:
+                parts.append(f"{name} reads {val:.1f}, exceeding its expected range by {dev:.1f} standard deviations")
         elif info["direction"] == "below":
-            parts.append(f"{name} reads {val:.1f}, falling below the lower bound of {lo:.1f} by {dev:.1f} standard deviations")
+            if lo is not None and hi is not None:
+                parts.append(f"{name} reads {val:.1f}, falling below the lower bound of {lo:.1f} by {dev:.1f} standard deviations")
+            else:
+                parts.append(f"{name} reads {val:.1f}, falling outside its expected range by {dev:.1f} standard deviations")
         else:
-            parts.append(f"{name} shows a gradual drift, with the running average {dev:.1f}\u03c3 from the historical mean of {info['baseline_mean']:.1f}")
+            parts.append(f"{name} shows a gradual drift, with the running average {dev:.1f}\u03c3 from the historical mean of {info.get('baseline_mean', 0):.1f}")
 
     anomaly_desc = "; ".join(parts)
     n = len(anomalies)
@@ -64,12 +87,25 @@ async def generate_reasoning(
     if not OPENAI_API_KEY:
         return _template_reasoning(machine_id, anomalies, risk_score, status, baselines), False
 
-    sensor_details = "\n".join(
-        f"- {s.replace('_', ' ').title()}: current={info['value']:.2f}, "
-        f"baseline range={info['expected_range']}, "
-        f"deviation={info['deviation_std']:.1f}\u03c3, type={info['direction']}"
-        for s, info in anomalies.items()
-    )
+    sensor_details = []
+    for s, info in anomalies.items():
+        expected_range = info.get('expected_range', '')
+        if isinstance(expected_range, str) and '–' in expected_range:
+            lo_str, hi_str = expected_range.split('–')
+            lo = float(lo_str)
+            hi = float(hi_str)
+        elif isinstance(expected_range, (list, tuple)) and len(expected_range) == 2:
+            lo, hi = expected_range
+        else:
+            lo, hi = None, None
+
+        range_text = expected_range if expected_range else 'unknown range'
+        sensor_details.append(
+            f"- {s.replace('_', ' ').title()}: current={info['value']:.2f}, "
+            f"baseline range={range_text}, "
+            f"deviation={info['deviation_std']:.1f}\u03c3, type={info['direction']}"
+        )
+    sensor_details = "\n".join(sensor_details)
 
     prompt = (
         "You are an industrial predictive maintenance AI analyst. "
