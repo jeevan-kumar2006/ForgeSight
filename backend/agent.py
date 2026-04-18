@@ -11,8 +11,6 @@ from backend.models import (
     PriorityItem, AgentReadingEvent, MachineStatus,
 )
 from backend.llm_client import generate_reasoning
-from backend.sms_alert import SmsAlerter
-from backend import mock_data
 
 MACHINE_IDS = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 SENSOR_FIELDS = ["temperature_C", "vibration_mm_s", "rpm", "current_A"]
@@ -20,14 +18,8 @@ BASE_URL = "http://localhost:8000"
 
 # ── Tuning ────────────────────────────────────────────────────────────────────
 SPIKE_WINDOW_SIZE       = 10
-ANOMALY_CONFIRM_SEC     = 3
-ANOMALY_CLEAR_SEC       = 2
+SPIKE_CONFIRM_THRESHOLD = 2
 DRIFT_EMA_ALPHA         = 0.08
-DRIFT_CONFIRM_MULT      = 1.6
-MIN_EFFECTIVE_STD       = 0.5
-NON_FAULT_RISK_CAP      = 92.0
-RISK_STEP_NON_FAULT     = 14.0
-RISK_STEP_FAULT         = 24.0
 DATA_GAP_WARN_SEC       = 8.0
 DATA_GAP_CRIT_SEC       = 20.0   # raised — avoids false positives on slow startup
 ALERT_COOLDOWN_SEC      = 45.0
@@ -80,9 +72,6 @@ async def fetch_and_compute_baselines(client: httpx.AsyncClient) -> Dict[str, Ma
 class MachineState:
     def __init__(self):
         self.spike_windows: Dict[str, deque] = {f: deque(maxlen=SPIKE_WINDOW_SIZE) for f in SENSOR_FIELDS}
-        self.out_of_bounds_streak: Dict[str, int] = {f: 0 for f in SENSOR_FIELDS}
-        self.drift_streak: Dict[str, int] = {f: 0 for f in SENSOR_FIELDS}
-        self.clear_streak: int = 0
         self.ema: Dict[str, float] = {}
         self.consecutive_anomalous: int = 0
         self.last_reading_ts: Optional[float] = None
@@ -100,7 +89,6 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
     anomalies: Dict[str, Any] = {}
     risk_parts: List[float] = []
     has_spike = has_drift = False
-    out_of_bounds_now = False
 
     for field in SENSOR_FIELDS:
         value = reading[field]
@@ -111,30 +99,18 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
         is_above = value > bl.upper
         is_below = value < bl.lower
         out_of_bounds = is_above or is_below
-        out_of_bounds_now = out_of_bounds_now or out_of_bounds
 
         state.spike_windows[field].append(1 if out_of_bounds else 0)
-
-        if out_of_bounds:
-            state.out_of_bounds_streak[field] += 1
-            state.drift_streak[field] = 0
-        else:
-            state.out_of_bounds_streak[field] = 0
+        recent = list(state.spike_windows[field])[-5:]
+        confirmed_spike = sum(recent) >= SPIKE_CONFIRM_THRESHOLD
 
         state.ema[field] = DRIFT_EMA_ALPHA * value + (1 - DRIFT_EMA_ALPHA) * state.ema[field]
-        effective_std = max(bl.std, MIN_EFFECTIVE_STD)
-        ema_dev = abs(state.ema[field] - bl.mean) / effective_std if effective_std > 0 else 0
-        if not out_of_bounds and ema_dev > DRIFT_CONFIRM_MULT:
-            state.drift_streak[field] += 1
-        else:
-            state.drift_streak[field] = 0
-
-        confirmed_spike = state.out_of_bounds_streak[field] >= ANOMALY_CONFIRM_SEC
-        drift_detected = state.drift_streak[field] >= ANOMALY_CONFIRM_SEC
+        ema_dev = abs(state.ema[field] - bl.mean) / bl.std if bl.std > 0 else 0
+        drift_detected = ema_dev > 1.5 and not out_of_bounds
 
         if confirmed_spike:
             has_spike = True
-            dev = ((value - bl.upper) / effective_std) if is_above else ((bl.lower - value) / effective_std)
+            dev = ((value - bl.upper) / bl.std) if is_above else ((bl.lower - value) / bl.std)
             dev = max(dev, 0)
             anomalies[field] = {
                 "value": value, "expected_range": f"{bl.lower:.1f}–{bl.upper:.1f}",
@@ -157,39 +133,27 @@ def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineSta
     elif has_spike:  anomaly_type = "spike"
     else:            anomaly_type = "none"
 
-    if out_of_bounds_now and anomaly_type == "none":
+    is_oob_now = any(list(state.spike_windows[f])[-1] == 1 for f in SENSOR_FIELDS if len(state.spike_windows[f]) > 0)
+    if is_oob_now and anomaly_type == "none":
         state.suppressed_spikes += 1
 
     n = len(anomalies)
     compound  = {0: 0, 1: 1.0, 2: 2.5, 3: 4.0}.get(n, 6.0)
 
     if anomalies:
-        state.clear_streak = 0
         state.consecutive_anomalous += 1
     else:
-        state.clear_streak += 1
         state.consecutive_anomalous = max(0, state.consecutive_anomalous - 2)
-
-    if state.clear_streak >= ANOMALY_CLEAR_SEC and state.consecutive_anomalous == 0:
-        anomaly_type = "none"
-
     persistence = min(1.0 + state.consecutive_anomalous * 0.25, 3.5)
 
     status_mult = {"running": 1.0, "warning": 2.5, "fault": 5.5}.get(reading.get("status", "running"), 1.0)
     base_risk   = max(risk_parts) if risk_parts else 0
-    raw_risk_unbounded = base_risk * 5 * compound * persistence * status_mult
-    non_fault = reading.get("status", "running") != "fault"
-    risk_cap = NON_FAULT_RISK_CAP if non_fault else 100.0
-    raw_risk = min(raw_risk_unbounded, risk_cap)
+    raw_risk    = min(base_risk * 5 * compound * persistence * status_mult, 100.0)
 
     if anomalies:
-        desired_risk = state.smoothed_risk * 0.4 + raw_risk * 0.6
-        max_step = RISK_STEP_NON_FAULT if non_fault else RISK_STEP_FAULT
-        state.smoothed_risk = min(desired_risk, state.smoothed_risk + max_step)
+        state.smoothed_risk = state.smoothed_risk * 0.4 + raw_risk * 0.6
     else:
-        state.smoothed_risk = state.smoothed_risk * 0.72
-        if state.clear_streak >= ANOMALY_CLEAR_SEC:
-            state.smoothed_risk = max(0.0, state.smoothed_risk - 1.5)
+        state.smoothed_risk = state.smoothed_risk * 0.95
 
     risk_score = round(state.smoothed_risk, 1)
     state.active_anomalies     = anomalies
@@ -226,19 +190,12 @@ class PredictiveMaintenanceAgent:
     def __init__(self):
         self.baselines:         Dict[str, MachineBaseline] = {}
         self.states:            Dict[str, MachineState]   = {m: MachineState() for m in MACHINE_IDS}
-        self.latest_events:     Dict[str, dict] = {}
         self.event_bus          = EventBus()
         self.alerts:            List[dict] = []
         self.priority_queue:    List[PriorityItem] = []
         self.maintenance_slots: List[dict] = []
-        self.maintenance_forwarding_stats = {
-            "api_success": 0,
-            "api_failure": 0,
-            "local_fallback": 0,
-        }
         self.running            = False
         self.start_time: float  = 0.0
-        self.sms_alerter        = SmsAlerter()
 
     def baseline_dict(self, mid: str) -> Dict[str, Dict[str, float]]:
         bl = self.baselines.get(mid)
@@ -246,50 +203,6 @@ class PredictiveMaintenanceAgent:
             return {}
         return {f: {"mean": getattr(bl, f).mean, "lower": getattr(bl, f).lower, "upper": getattr(bl, f).upper}
                 for f in SENSOR_FIELDS}
-
-    def live_snapshot(self) -> dict:
-        return {
-            "agent_running": self.running,
-            "machines": [self.latest_events[mid] for mid in MACHINE_IDS if mid in self.latest_events],
-            "forwarding": self.maintenance_forwarding_stats,
-            "recent_slots": self.maintenance_slots[:10],
-        }
-
-    def _bootstrap_latest_events(self):
-        """Fetch one initial reading per machine to bootstrap the dashboard."""
-        for mid in MACHINE_IDS:
-            if mid not in self.baselines:
-                continue
-            try:
-                # Get one live reading from mock_data generator
-                reading = mock_data._next_live(mid)
-                baseline = self.baselines[mid]
-                state = self.states[mid]
-                
-                # Detect anomalies for this reading
-                risk, anomalies, confirmed, anomaly_type = detect_anomalies(
-                    reading.model_dump(), baseline, state
-                )
-                
-                # Create and store event
-                event = AgentReadingEvent(
-                    machine_id=mid,
-                    timestamp=datetime.now(timezone.utc),
-                    temperature_C=reading.temperature_C,
-                    vibration_mm_s=reading.vibration_mm_s,
-                    rpm=reading.rpm,
-                    current_A=reading.current_A,
-                    status=reading.status,
-                    risk_score=risk,
-                    baselines=self.baseline_dict(mid),
-                    active_anomalies=anomalies,
-                    data_gap=False,
-                    anomaly_type=anomaly_type,
-                    suppressed_spikes=state.suppressed_spikes,
-                )
-                self.latest_events[mid] = event.model_dump()
-            except Exception as e:
-                print(f"[FORGESIGHT] Bootstrap read failed for {mid}: {e}")
 
     def _update_priority_queue(self, mid: str, risk: float, reason: str, prio: str):
         self.priority_queue = [p for p in self.priority_queue if p.machine_id != mid]
@@ -305,16 +218,6 @@ class PredictiveMaintenanceAgent:
         now   = time.time()
 
         prio_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
-        reason_summary = f"[{anomaly_type.upper()}] {len(anomalies)} sensor(s) anomalous: {', '.join(anomalies.keys())}"
-        self._update_priority_queue(mid, risk, reason_summary, prio)
-
-        should_schedule = (
-            (risk > AUTO_SCHEDULE_RISK and state.consecutive_anomalous >= AUTO_SCHEDULE_PERSIST)
-            or reading.get("status") == "fault"
-        )
-        if should_schedule:
-            await self._auto_schedule(mid, risk, reason_summary, prio)
-
         if (now - state.last_alert_ts < ALERT_COOLDOWN_SEC
                 and prio_rank.get(prio, 0) <= prio_rank.get(state.last_alert_priority, 0)
                 and reading.get("status") != "fault"):
@@ -345,9 +248,6 @@ class PredictiveMaintenanceAgent:
         await self.event_bus.publish("alert", alert)
         self._update_priority_queue(mid, risk, alert["reason_summary"], prio)
 
-        if prio in {"high", "critical"}:
-            await asyncio.to_thread(self.sms_alerter.send_alert, alert)
-
         # Auto-schedule maintenance at lower risk threshold
         should_schedule = (
             (risk > AUTO_SCHEDULE_RISK and state.consecutive_anomalous >= AUTO_SCHEDULE_PERSIST)
@@ -377,21 +277,15 @@ class PredictiveMaintenanceAgent:
             "reason":         reason[:200],
             "priority":       prio,
             "created_at":     datetime.now(timezone.utc).isoformat(),
-            "source":         "agent_forwarded",
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as c:
                 resp = await c.post(f"{BASE_URL}/schedule-maintenance", json=slot)
                 resp.raise_for_status()
                 slot = resp.json()
-                self.maintenance_forwarding_stats["api_success"] += 1
-                state.scheduled_slot = True
-                return
         except Exception:
-            self.maintenance_forwarding_stats["api_failure"] += 1
+            pass  # Use local slot object on failure
 
-        slot["source"] = "agent_local_fallback"
-        self.maintenance_forwarding_stats["local_fallback"] += 1
         self.maintenance_slots.append(slot)
         state.scheduled_slot = True
         await self.event_bus.publish("maintenance", slot)
@@ -478,20 +372,18 @@ class PredictiveMaintenanceAgent:
                                 anomaly_type=anomaly_type,
                                 suppressed_spikes=state.suppressed_spikes,
                             )
-                            event_payload = event.model_dump()
-                            self.latest_events[mid] = event_payload
-                            await self.event_bus.publish("reading", event_payload)
+                            await self.event_bus.publish("reading", event.model_dump())
 
                             if confirmed and risk > 5:
                                 await self._handle_alert(mid, risk, anomalies, reading, anomaly_type)
-                            else:
+                            elif risk <= 5:
                                 self._update_priority_queue(mid, risk, "Normal", "info")
 
             except Exception as e:
                 # Broad catch ensures one failing stream never kills the others
                 print(f"[FORGESIGHT] Stream error for {mid}: {type(e).__name__}: {e}")
                 if self.running:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(3)
 
     async def start(self):
         self.running    = True
@@ -505,9 +397,6 @@ class PredictiveMaintenanceAgent:
             for f in SENSOR_FIELDS:
                 if mid in self.baselines:
                     self.states[mid].ema[f] = getattr(self.baselines[mid], f).mean
-
-        # Bootstrap dashboard with initial readings
-        self._bootstrap_latest_events()
 
         await self.event_bus.publish("system", {
             "status": "active",
