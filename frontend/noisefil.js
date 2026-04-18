@@ -16,6 +16,34 @@ const METRIC_LABEL = {
 let cache = {};
 let refreshInProgress = false;
 
+function mergeLiveSamples(liveMachines) {
+  if (!Array.isArray(liveMachines)) return;
+  liveMachines.forEach((m) => {
+    const mid = m.machine_id;
+    if (!mid || !Array.isArray(cache[mid])) return;
+    const row = {
+      machine_id: mid,
+      timestamp: m.timestamp || new Date().toISOString(),
+      temperature_C: Number(m.temperature_C),
+      vibration_mm_s: Number(m.vibration_mm_s),
+      rpm: Number(m.rpm),
+      current_A: Number(m.current_A),
+      status: m.status || "running",
+    };
+    if (![row.temperature_C, row.vibration_mm_s, row.rpm, row.current_A].every(Number.isFinite)) {
+      return;
+    }
+
+    const arr = cache[mid];
+    const lastTs = arr.length ? new Date(arr[arr.length - 1].timestamp).getTime() : 0;
+    const nextTs = new Date(row.timestamp).getTime();
+    if (nextTs > lastTs) {
+      arr.push(row);
+      if (arr.length > 10081) arr.shift();
+    }
+  });
+}
+
 const FALLBACK_BASELINES = {
   CNC_01: { temperature_C: 72, vibration_mm_s: 1.8, rpm: 1480, current_A: 12.5 },
   CNC_02: { temperature_C: 68, vibration_mm_s: 1.5, rpm: 1490, current_A: 11.8 },
@@ -221,6 +249,14 @@ async function loadHistoryData() {
     MACHINE_IDS.forEach((mid, idx) => {
       cache[mid] = responses[idx];
     });
+
+    try {
+      const liveResp = await fetch(`/api/live-state?t=${Date.now()}`, { cache: "no-store" });
+      if (liveResp.ok) {
+        const payload = await liveResp.json();
+        mergeLiveSamples(payload.machines || []);
+      }
+    } catch (_) {}
   } catch (err) {
     MACHINE_IDS.forEach((mid) => {
       cache[mid] = generateFallbackHistory(mid);
