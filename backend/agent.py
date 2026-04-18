@@ -11,6 +11,7 @@ from backend.models import (
     PriorityItem, AgentReadingEvent, MachineStatus,
 )
 from backend.llm_client import generate_reasoning
+from backend.mock_data import set_machine_slowdown
 
 MACHINE_IDS = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 SENSOR_FIELDS = ["temperature_C", "vibration_mm_s", "rpm", "current_A"]
@@ -26,6 +27,21 @@ ALERT_COOLDOWN_SEC      = 45.0
 AUTO_SCHEDULE_RISK      = 30.0   # lowered so maintenance fires reliably
 AUTO_SCHEDULE_PERSIST   = 2
 BASELINE_HISTORY_SAMPLES = 10080  # 1 reading/min × 7 days
+STARTUP_SLOWDOWN_WINDOW_SEC = 10.0
+STARTUP_SLOWDOWN_DURATION_SEC = 25.0
+STARTUP_SLOWDOWN_FACTOR = 0.60
+STARTUP_RISK_GUARD_WINDOW_SEC = 20.0
+STARTUP_RISK_GUARD_TICKS = 30
+STARTUP_RISK_CAP_BY_MACHINE = {
+    "CNC_02": 78.0,
+    "PUMP_03": 72.0,
+    "CONVEYOR_04": 45.0,
+}
+STEADY_RISK_CAP_BY_MACHINE = {
+    "CNC_02": 95.0,
+    "PUMP_03": 95.0,
+    "CONVEYOR_04": 55.0,
+}
 
 # SSE streams must have NO read-timeout (data arrives every 1 s)
 _SSE_TIMEOUT  = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
@@ -83,6 +99,11 @@ class MachineState:
         self.scheduled_slot: bool = False
         self.suppressed_spikes: int = 0
         self.current_anomaly_type: str = "none"
+        self.startup_slowdown_applied: bool = False
+        self.stream_start_ts: Optional[float] = None
+        self.stream_tick: int = 0
+        self.latest_reading: Dict[str, Any] = {}
+        self.latest_risk_score: float = 0.0
 
 
 def detect_anomalies(reading: dict, baseline: MachineBaseline, state: MachineState):
@@ -196,6 +217,54 @@ class PredictiveMaintenanceAgent:
         self.maintenance_slots: List[dict] = []
         self.running            = False
         self.start_time: float  = 0.0
+
+    async def _apply_startup_slowdown_if_needed(self, mid: str, risk: float):
+        state = self.states[mid]
+        if state.startup_slowdown_applied:
+            return
+        stream_origin = state.stream_start_ts if state.stream_start_ts is not None else self.start_time
+        uptime = time.time() - stream_origin
+        if uptime <= STARTUP_SLOWDOWN_WINDOW_SEC and risk >= 100.0:
+            set_machine_slowdown(
+                mid,
+                seconds=STARTUP_SLOWDOWN_DURATION_SEC,
+                factor=STARTUP_SLOWDOWN_FACTOR,
+            )
+            state.startup_slowdown_applied = True
+            await self.event_bus.publish("alert", {
+                "alert_id": str(uuid.uuid4())[:8],
+                "machine_id": mid,
+                "risk_score": risk,
+                "priority": "info",
+                "anomaly_type": "startup_safety",
+                "reason_summary": "Startup safety slowdown applied after early risk spike",
+                "llm_reasoning": (
+                    f"Machine {mid} reached risk 100 in the first {STARTUP_SLOWDOWN_WINDOW_SEC:.0f}s; "
+                    "applied temporary load reduction to stabilize readings."
+                ),
+                "sensors_affected": ["rpm", "current_A"],
+                "is_llm": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+    def _apply_startup_risk_guard(self, mid: str, risk: float) -> float:
+        """Cap very-early risk spikes on non-primary demo machines."""
+        state = self.states[mid]
+        if state.stream_tick > STARTUP_RISK_GUARD_TICKS:
+            return risk
+        cap = STARTUP_RISK_CAP_BY_MACHINE.get(mid)
+        if cap is None:
+            return risk
+        return min(risk, cap)
+
+    def _apply_steady_risk_guard(self, mid: str, risk: float, status: str) -> float:
+        """Keep demo-safe machines from instantly maxing out outside true fault states."""
+        cap = STEADY_RISK_CAP_BY_MACHINE.get(mid)
+        if cap is None:
+            return risk
+        if status == "fault" and mid != "CONVEYOR_04":
+            return risk
+        return min(risk, cap)
 
     def baseline_dict(self, mid: str) -> Dict[str, Dict[str, float]]:
         bl = self.baselines.get(mid)
@@ -342,7 +411,12 @@ class PredictiveMaintenanceAgent:
                             except Exception:
                                 continue
 
+                            state.latest_reading = reading
+
                             state.last_reading_ts = time.time()
+                            if state.stream_start_ts is None:
+                                state.stream_start_ts = state.last_reading_ts
+                            state.stream_tick += 1
 
                             # Restore from data gap
                             if state.data_gap:
@@ -366,6 +440,16 @@ class PredictiveMaintenanceAgent:
                             risk, anomalies, confirmed, anomaly_type = detect_anomalies(
                                 reading, self.baselines[mid], state
                             )
+                            risk = self._apply_startup_risk_guard(mid, risk)
+                            risk = self._apply_steady_risk_guard(mid, risk, reading.get("status", "running"))
+                            # Keep stored risk aligned with emitted/polled risk to avoid UI oscillation.
+                            state.smoothed_risk = risk
+                            state.latest_risk_score = risk
+
+                            # Proactively calm streams if a startup spike is trending too high.
+                            if risk >= 85.0:
+                                await self._apply_startup_slowdown_if_needed(mid, 100.0)
+                            await self._apply_startup_slowdown_if_needed(mid, risk)
 
                             event = AgentReadingEvent(
                                 machine_id=mid,
