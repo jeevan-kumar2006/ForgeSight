@@ -14,8 +14,35 @@ const METRIC_META = {
 };
 
 let historyCache = {};
-let proofLoading = false;
 let trendLoading = false;
+
+function mergeLiveSamples(liveMachines) {
+  if (!Array.isArray(liveMachines)) return;
+  liveMachines.forEach((m) => {
+    const mid = m.machine_id;
+    if (!mid || !Array.isArray(historyCache[mid])) return;
+    const row = {
+      machine_id: mid,
+      timestamp: m.timestamp || new Date().toISOString(),
+      temperature_C: Number(m.temperature_C),
+      vibration_mm_s: Number(m.vibration_mm_s),
+      rpm: Number(m.rpm),
+      current_A: Number(m.current_A),
+      status: m.status || "running",
+    };
+    if (![row.temperature_C, row.vibration_mm_s, row.rpm, row.current_A].every(Number.isFinite)) {
+      return;
+    }
+
+    const arr = historyCache[mid];
+    const lastTs = arr.length ? new Date(arr[arr.length - 1].timestamp).getTime() : 0;
+    const nextTs = new Date(row.timestamp).getTime();
+    if (nextTs > lastTs) {
+      arr.push(row);
+      if (arr.length > 10081) arr.shift();
+    }
+  });
+}
 
 const FALLBACK_BASELINES = {
   CNC_01: { temperature_C: 72, vibration_mm_s: 1.8, rpm: 1480, current_A: 12.5 },
@@ -213,6 +240,14 @@ async function loadHistory() {
     MACHINE_IDS.forEach((mid, idx) => {
       historyCache[mid] = responses[idx];
     });
+
+    try {
+      const liveResp = await fetch(`/api/live-state?t=${Date.now()}`, { cache: "no-store" });
+      if (liveResp.ok) {
+        const payload = await liveResp.json();
+        mergeLiveSamples(payload.machines || []);
+      }
+    } catch (_) {}
   } catch (err) {
     MACHINE_IDS.forEach((mid) => {
       historyCache[mid] = generateFallbackHistory(mid);
@@ -228,71 +263,6 @@ async function loadHistory() {
       refreshBtn.disabled = false;
     }
     trendLoading = false;
-  }
-}
-
-function sourceBadge(source) {
-  const normalized = (source || "api").toLowerCase();
-  if (normalized.includes("fallback")) {
-    return `<span class="badge-source badge-fallback">${source}</span>`;
-  }
-  return `<span class="badge-source badge-forwarded">${source}</span>`;
-}
-
-async function loadProof(manual = false) {
-  if (proofLoading) return;
-  proofLoading = true;
-  const refreshBtn = document.getElementById("refresh-proof");
-  if (refreshBtn) {
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = "Refreshing...";
-  }
-
-  try {
-    const resp = await fetch("/api/maintenance-forwarding-status", { cache: "no-store" });
-    if (!resp.ok) throw new Error("Proof fetch failed");
-    const payload = await resp.json();
-
-    const forwarding = payload.forwarding || {};
-    setText(
-      "proof-summary",
-      `API success ${forwarding.api_success || 0} | API failure ${forwarding.api_failure || 0} | Local fallback ${forwarding.local_fallback || 0} | Refreshed ${new Date().toLocaleTimeString()}`
-    );
-
-    const body = document.getElementById("proof-body");
-    const slots = payload.recent_slots || [];
-    if (!slots.length) {
-      body.innerHTML = "<tr><td colspan=\"6\">No maintenance slots yet</td></tr>";
-      return;
-    }
-
-    body.innerHTML = slots
-      .map((slot) => {
-        const apiReceived = slot.api_received_at ? formatDate(slot.api_received_at) : "-";
-        const scheduled = slot.scheduled_time ? formatDate(slot.scheduled_time) : "-";
-        return `
-          <tr>
-            <td>${slot.machine_id || "-"}</td>
-            <td>${(slot.priority || "-").toUpperCase()}</td>
-            <td>${sourceBadge(slot.source || "api")}</td>
-            <td>${slot.api_request_id || "-"}</td>
-            <td>${apiReceived}</td>
-            <td>${scheduled}</td>
-          </tr>
-        `;
-      })
-      .join("");
-  } finally {
-    if (refreshBtn) {
-      refreshBtn.disabled = false;
-      refreshBtn.textContent = manual ? "Proof Updated" : "Refresh Proof";
-      if (manual) {
-        setTimeout(() => {
-          refreshBtn.textContent = "Refresh Proof";
-        }, 900);
-      }
-    }
-    proofLoading = false;
   }
 }
 
@@ -313,26 +283,7 @@ async function bootstrap() {
     }
   });
 
-  document.getElementById("refresh-proof").addEventListener("click", async () => {
-    try {
-      await loadProof(true);
-    } catch (err) {
-      setText("proof-summary", `Proof load error: ${err.message}`);
-      const refreshBtn = document.getElementById("refresh-proof");
-      if (refreshBtn) {
-        refreshBtn.disabled = false;
-        refreshBtn.textContent = "Refresh Proof";
-      }
-      proofLoading = false;
-    }
-  });
-
   await loadHistory();
-  await loadProof();
-
-  setInterval(() => {
-    loadProof().catch(() => {});
-  }, 5000);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
