@@ -18,16 +18,8 @@ BASELINES = {
     "CONVEYOR_04": {"temp": 45.0, "vib": 0.9,  "rpm":  720.0, "current":  8.5},
 }
 
-# Start each machine at a different phase so all periodic anomalies do not fire at t=0.
-INITIAL_TICKS = {
-    "CNC_01": 40,
-    "CNC_02": 90,
-    "PUMP_03": 60,
-    "CONVEYOR_04": 25,
-}
-
 # Module-level live state — persists across SSE ticks (mirrors server.js liveState)
-_live = {mid: {**b, "tick": INITIAL_TICKS.get(mid, 0)} for mid, b in BASELINES.items()}
+_live = {mid: {**b, "tick": 0} for mid, b in BASELINES.items()}
 
 
 def _r(lo, hi): return random.uniform(lo, hi)
@@ -55,17 +47,14 @@ def _next_live(machine_id: str) -> SensorReading:
         if vib > 5.5: status = MachineStatus.FAULT
 
     elif machine_id == "CNC_02":
-        # Skip spikes during warmup period (first 300 ticks ≈ 5 min)
-        if s["tick"] > 300 and s["tick"] % 180 < 18:
-            temp    += _r(2, 6)  # Reduced from _r(5, 18)
-            current += _r(0.5, 1.5)  # Reduced from _r(1, 4)
+        if s["tick"] % 180 < 20:
+            temp    += _r(5,  18)
+            current += _r(1,   4)
         if temp > 95:  status = MachineStatus.WARNING
         if temp > 110: status = MachineStatus.FAULT
 
     elif machine_id == "PUMP_03":
-        # Warm-up burst probability to avoid instant hard spikes at startup.
-        burst_prob = min(0.04, max(0.0, (s["tick"] - 30) / 300.0 * 0.04))
-        if random.random() < burst_prob:
+        if random.random() < 0.04:
             vib     += _r(1.5, 5)
             current += _r(0.5, 2)
         rpm -= 0.02
@@ -126,9 +115,8 @@ class MachineSimulator:
                 if d > 0.9 and progress > 0.8: status = MachineStatus.FAULT
 
             elif self.machine_id == "CNC_02":
-                # Reduce historical spikes during recent days to avoid persistent high baselines
-                if 0.5 < progress < 0.75 and day_offset < 1:  # Only day 0, not day 1-2
-                    temp += _r(8, 15); current += _r(1, 2.5)  # Reduced from _r(15, 30) and _r(2, 5)
+                if 0.5 < progress < 0.75 and day_offset < 2:
+                    temp += _r(15, 30); current += _r(2, 5)
                     if temp > 95: status = MachineStatus.WARNING
                 if day_offset == 1 and 0.60 < progress < 0.65:
                     temp = 112 + _r(0, 8); current = 22 + _r(0, 3)
@@ -174,9 +162,5 @@ async def sse_stream_machine(machine_id: str) -> AsyncGenerator[str, None]:
         return
     while True:
         reading = sim.generate_live_reading()
-        # Keep history endpoint live by appending current stream readings.
-        sim.history_cache.append(reading)
-        if len(sim.history_cache) > 10081:
-            sim.history_cache.pop(0)
         yield f"data: {reading.model_dump_json()}\n\n"
         await asyncio.sleep(1.0)
