@@ -55,9 +55,10 @@ def _next_live(machine_id: str) -> SensorReading:
         if vib > 5.5: status = MachineStatus.FAULT
 
     elif machine_id == "CNC_02":
-        if s["tick"] % 180 < 20:
-            temp    += _r(5,  18)
-            current += _r(1,   4)
+        # Skip spikes during warmup period (first 300 ticks ≈ 5 min)
+        if s["tick"] > 300 and s["tick"] % 180 < 18:
+            temp    += _r(2, 6)  # Reduced from _r(5, 18)
+            current += _r(0.5, 1.5)  # Reduced from _r(1, 4)
         if temp > 95:  status = MachineStatus.WARNING
         if temp > 110: status = MachineStatus.FAULT
 
@@ -125,8 +126,9 @@ class MachineSimulator:
                 if d > 0.9 and progress > 0.8: status = MachineStatus.FAULT
 
             elif self.machine_id == "CNC_02":
-                if 0.5 < progress < 0.75 and day_offset < 2:
-                    temp += _r(15, 30); current += _r(2, 5)
+                # Reduce historical spikes during recent days to avoid persistent high baselines
+                if 0.5 < progress < 0.75 and day_offset < 1:  # Only day 0, not day 1-2
+                    temp += _r(8, 15); current += _r(1, 2.5)  # Reduced from _r(15, 30) and _r(2, 5)
                     if temp > 95: status = MachineStatus.WARNING
                 if day_offset == 1 and 0.60 < progress < 0.65:
                     temp = 112 + _r(0, 8); current = 22 + _r(0, 3)
