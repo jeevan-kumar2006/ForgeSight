@@ -4,12 +4,17 @@ Live sensor simulation matching the Hack Malendau 2026 generate-history.js spec.
 Each machine has its own live state that drifts over time (mirrors server.js nextLiveReading).
 """
 import asyncio
+import os
 import random
+import time
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from backend.models import SensorReading, MachineStatus
 
 MACHINES = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
+
+SAFE_STARTUP_MODE = os.environ.get("SAFE_STARTUP_MODE", "true").lower() in {"1", "true", "yes"}
+SAFE_STARTUP_SECONDS = int(os.environ.get("SAFE_STARTUP_SECONDS", "20"))
 
 BASELINES = {
     "CNC_01":      {"temp": 72.0, "vib": 1.8,  "rpm": 1480.0, "current": 12.5},
@@ -19,11 +24,29 @@ BASELINES = {
 }
 
 # Module-level live state — persists across SSE ticks (mirrors server.js liveState)
-_live = {mid: {**b, "tick": 0} for mid, b in BASELINES.items()}
+_live = {
+    mid: {
+        **b,
+        "tick": 0,
+        "slowdown_until": 0.0,
+        "slowdown_factor": 1.0,
+    }
+    for mid, b in BASELINES.items()
+}
 
 
 def _r(lo, hi): return random.uniform(lo, hi)
 def _fix(n, d=2): return round(n, d)
+
+
+def set_machine_slowdown(machine_id: str, *, seconds: float = 25.0, factor: float = 0.65) -> None:
+    """Temporarily reduce machine load in live simulator readings."""
+    if machine_id not in _live:
+        return
+    now = time.time()
+    state = _live[machine_id]
+    state["slowdown_until"] = max(float(state.get("slowdown_until", 0.0)), now + max(1.0, seconds))
+    state["slowdown_factor"] = max(0.35, min(1.0, factor))
 
 
 def _next_live(machine_id: str) -> SensorReading:
@@ -31,6 +54,7 @@ def _next_live(machine_id: str) -> SensorReading:
     b = BASELINES[machine_id]
     s["tick"] += 1
     status = MachineStatus.RUNNING
+    in_safe_start = SAFE_STARTUP_MODE and s["tick"] <= SAFE_STARTUP_SECONDS
 
     # Mean-reversion + noise (mirrors server.js exactly)
     temp    = s["temp"]    + (b["temp"]    - s["temp"])    * 0.02 + _r(-0.4,  0.4)
@@ -47,23 +71,31 @@ def _next_live(machine_id: str) -> SensorReading:
         if vib > 5.5: status = MachineStatus.FAULT
 
     elif machine_id == "CNC_02":
-        if s["tick"] % 180 < 20:
+        if (not in_safe_start) and s["tick"] % 180 < 20:
             temp    += _r(5,  18)
             current += _r(1,   4)
         if temp > 95:  status = MachineStatus.WARNING
         if temp > 110: status = MachineStatus.FAULT
 
     elif machine_id == "PUMP_03":
-        if random.random() < 0.04:
+        if (not in_safe_start) and random.random() < 0.04:
             vib     += _r(1.5, 5)
             current += _r(0.5, 2)
         rpm -= 0.02
         if vib > 5 or rpm < 2800: status = MachineStatus.WARNING
 
     elif machine_id == "CONVEYOR_04":
-        if random.random() < 0.005:
+        if (not in_safe_start) and random.random() < 0.005:
             vib    += _r(0.5, 1.5)
             status  = MachineStatus.WARNING
+
+    # Startup safety mode: lower load for a short period when requested by the agent.
+    if s.get("slowdown_until", 0.0) > time.time():
+        factor = max(0.35, min(1.0, float(s.get("slowdown_factor", 0.65))))
+        rpm *= factor
+        current *= 0.6 + (0.4 * factor)
+        temp -= (1.0 - factor) * 0.7
+        vib *= 0.85 + (0.15 * factor)
 
     temp    = max(20.0, min(130.0, temp))
     vib     = max(0.1,  min(12.0,  vib))
