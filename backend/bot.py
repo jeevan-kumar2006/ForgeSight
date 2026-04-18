@@ -1,7 +1,9 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict, TelegramError
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import httpx
 import asyncio
+import traceback
 
 TOKEN = "8537061446:AAHMJwAakwLX898rC4q_TYlCI18RrfxfanM"
 BACKEND_URL = "http://localhost:8000"
@@ -317,6 +319,16 @@ async def handle_back_to_status(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ─── Main Application Setup ────────────────────────────────────────────────────
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    err = context.error
+    print(f"[BOT] Error handler triggered: {err}")
+    if isinstance(err, Conflict):
+        print("[BOT] Telegram polling conflict detected. Only one bot instance may run per token.")
+        print("[BOT] Stop any other bot using this token or remove the webhook before retrying.")
+    else:
+        traceback_str = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+        print(f"[BOT] Traceback:\n{traceback_str}")
+
 app = ApplicationBuilder().token(TOKEN).build()
 
 # Add command handlers
@@ -329,6 +341,20 @@ app.add_handler(CommandHandler("machines", machines_command))
 app.add_handler(CallbackQueryHandler(handle_machine_selection, pattern="^machine_"))
 app.add_handler(CallbackQueryHandler(handle_back_to_status, pattern="^back_to_status$"))
 
+# Register error handler
+app.add_error_handler(error_handler)
+
 print("[BOT] ForgeSight Telegram Bot is starting...")
 print("[BOT] Available commands: /start, /status, /machines, /help")
-app.run_polling()
+
+if __name__ == "__main__":
+    try:
+        app.run_polling(drop_pending_updates=True)
+    except Conflict as e:
+        print("[BOT] Telegram Conflict error: please stop any other active getUpdates/polling session for this bot token.")
+        print("[BOT] You can also use BotFather to remove an active webhook if one is set.")
+        print(f"[BOT] Detailed error: {e}")
+    except TelegramError as e:
+        print(f"[BOT] Telegram API error: {e}")
+    except Exception as e:
+        print(f"[BOT] Unexpected startup error: {e}")
