@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.models import SensorReading
@@ -31,6 +31,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ForgeSight", lifespan=lifespan)
 
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend"))
+
+
+def _forwarding_snapshot():
+    slots = list(agent.maintenance_slots)
+    api_success = 0
+    local_fallback = 0
+    api_failure = 0
+
+    for s in slots:
+        source = str(s.get("source", "api")).lower()
+        if "fallback" in source:
+            local_fallback += 1
+        else:
+            api_success += 1
+
+    return {
+        "api_success": api_success,
+        "api_failure": api_failure,
+        "local_fallback": local_fallback,
+    }
 
 
 @app.get("/stream/{machine_id}")
@@ -113,8 +133,44 @@ async def get_baselines(machine_id: str):
     if not bl: return {}
     return {f: {"mean": getattr(bl, f).mean, "lower": getattr(bl, f).lower, "upper": getattr(bl, f).upper} for f in ["temperature_C", "vibration_mm_s", "rpm", "current_A"]}
 
-@app.get("/")
-async def serve_index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+@app.get("/api/live-state")
+async def get_live_state():
+    machines = []
+    for mid in MACHINE_IDS:
+        st = agent.states.get(mid)
+        if not st:
+            continue
+        reading = st.latest_reading or {}
+        machines.append({
+            "machine_id": mid,
+            "temperature_C": reading.get("temperature_C"),
+            "vibration_mm_s": reading.get("vibration_mm_s"),
+            "rpm": reading.get("rpm"),
+            "current_A": reading.get("current_A"),
+            "status": reading.get("status", "running"),
+            "risk_score": st.latest_risk_score,
+            "baselines": agent.baseline_dict(mid),
+            "active_anomalies": st.active_anomalies,
+            "data_gap": st.data_gap,
+            "anomaly_type": st.current_anomaly_type,
+            "suppressed_spikes": st.suppressed_spikes,
+            "timestamp": reading.get("timestamp"),
+        })
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+    return {
+        "agent_running": agent.running,
+        "machines": machines,
+        "forwarding": _forwarding_snapshot(),
+        "recent_slots": agent.maintenance_slots[-10:],
+    }
+
+@app.get("/api/maintenance-forwarding-status")
+async def get_maintenance_forwarding_status():
+    return {
+        "forwarding": _forwarding_snapshot(),
+        "recent_slots": agent.maintenance_slots[-20:],
+    }
+
+# Mount frontend at root so /, /app.js, /styles.css and other pages resolve.
+# API routes declared above keep precedence over this catch-all mount.
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
