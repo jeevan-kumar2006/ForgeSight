@@ -124,6 +124,35 @@ main {
   border-color: rgba(99,102,241,0.65);
   background: rgba(99,102,241,0.22);
 }
+.feature-telegram {
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  border-color: rgba(37, 139, 247, 0.35);
+  background: rgba(37, 139, 247, 0.1);
+  color: #78b9ff;
+}
+.feature-telegram:hover {
+  border-color: rgba(37, 139, 247, 0.65);
+  background: rgba(37, 139, 247, 0.18);
+}
+.telegram-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240"><path fill="%23ffffff" d="M120 0C53.7 0 0 53.7 0 120s53.7 120 120 120 120-53.7 120-120S186.3 0 120 0zm53.5 80.4l-22.5 106.5c-1.7 7.5-6.1 9.3-12.3 5.8l-34-25.1-16.4 15.8c-1.8 1.8-3.3 3.3-6.8 3.3l2.4-34.4 62.6-56.6c2.7-2.4-.6-3.7-4.2-1.3l-77.4 48.8-33.4-10.4c-7.2-2.2-7.3-7.2 1.5-10.7l130-50.1c6-2.3 11.3 1.4 9.4 10.2z"/></svg>') center/contain no-repeat;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .logo-icon { font-size: 6.45rem; line-height: 1; }
 .top-bar-left h1 {
   font-size: 1.55rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 2px;
