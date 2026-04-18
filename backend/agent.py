@@ -12,6 +12,7 @@ from backend.models import (
 )
 from backend.llm_client import generate_reasoning
 from backend.sms_alert import SmsAlerter
+from backend import mock_data
 
 MACHINE_IDS = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 SENSOR_FIELDS = ["temperature_C", "vibration_mm_s", "rpm", "current_A"]
@@ -254,6 +255,42 @@ class PredictiveMaintenanceAgent:
             "recent_slots": self.maintenance_slots[:10],
         }
 
+    def _bootstrap_latest_events(self):
+        """Fetch one initial reading per machine to bootstrap the dashboard."""
+        for mid in MACHINE_IDS:
+            if mid not in self.baselines:
+                continue
+            try:
+                # Get one live reading from mock_data generator
+                reading = mock_data._next_live(mid)
+                baseline = self.baselines[mid]
+                state = self.states[mid]
+                
+                # Detect anomalies for this reading
+                risk, anomalies, confirmed, anomaly_type = detect_anomalies(
+                    reading.model_dump(), baseline, state
+                )
+                
+                # Create and store event
+                event = AgentReadingEvent(
+                    machine_id=mid,
+                    timestamp=datetime.now(timezone.utc),
+                    temperature_C=reading.temperature_C,
+                    vibration_mm_s=reading.vibration_mm_s,
+                    rpm=reading.rpm,
+                    current_A=reading.current_A,
+                    status=reading.status,
+                    risk_score=risk,
+                    baselines=self.baseline_dict(mid),
+                    active_anomalies=anomalies,
+                    data_gap=False,
+                    anomaly_type=anomaly_type,
+                    suppressed_spikes=state.suppressed_spikes,
+                )
+                self.latest_events[mid] = event.model_dump()
+            except Exception as e:
+                print(f"[FORGESIGHT] Bootstrap read failed for {mid}: {e}")
+
     def _update_priority_queue(self, mid: str, risk: float, reason: str, prio: str):
         self.priority_queue = [p for p in self.priority_queue if p.machine_id != mid]
         if risk > 10:
@@ -468,6 +505,9 @@ class PredictiveMaintenanceAgent:
             for f in SENSOR_FIELDS:
                 if mid in self.baselines:
                     self.states[mid].ema[f] = getattr(self.baselines[mid], f).mean
+
+        # Bootstrap dashboard with initial readings
+        self._bootstrap_latest_events()
 
         await self.event_bus.publish("system", {
             "status": "active",
