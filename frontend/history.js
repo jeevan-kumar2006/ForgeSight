@@ -17,6 +17,35 @@ let historyCache = {};
 let proofLoading = false;
 let trendLoading = false;
 
+const FALLBACK_BASELINES = {
+  CNC_01: { temperature_C: 72, vibration_mm_s: 1.8, rpm: 1480, current_A: 12.5 },
+  CNC_02: { temperature_C: 68, vibration_mm_s: 1.5, rpm: 1490, current_A: 11.8 },
+  PUMP_03: { temperature_C: 55, vibration_mm_s: 2.2, rpm: 2950, current_A: 18 },
+  CONVEYOR_04: { temperature_C: 45, vibration_mm_s: 0.9, rpm: 720, current_A: 8.5 },
+};
+
+function generateFallbackHistory(machineId, sampleCount = 1440) {
+  const baseline = FALLBACK_BASELINES[machineId] || FALLBACK_BASELINES.CNC_01;
+  const rows = [];
+  const start = Date.now() - sampleCount * 60_000;
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = start + i * 60_000;
+    const wave = Math.sin(i / 38) * 0.6 + Math.cos(i / 87) * 0.35;
+    const drift = i / sampleCount;
+    rows.push({
+      machine_id: machineId,
+      timestamp: new Date(t).toISOString(),
+      temperature_C: Number((baseline.temperature_C + wave * 2 + drift * 4).toFixed(2)),
+      vibration_mm_s: Number((baseline.vibration_mm_s + wave * 0.18 + drift * 0.7).toFixed(3)),
+      rpm: Number((baseline.rpm + Math.sin(i / 55) * 22 - drift * 35).toFixed(0)),
+      current_A: Number((baseline.current_A + wave * 0.45 + drift * 0.9).toFixed(2)),
+    });
+  }
+
+  return rows;
+}
+
 function setText(id, value) {
   const el = document.getElementById(id);
   if (el) el.textContent = value;
@@ -184,17 +213,21 @@ async function loadHistory() {
     MACHINE_IDS.forEach((mid, idx) => {
       historyCache[mid] = responses[idx];
     });
-
+  } catch (err) {
+    MACHINE_IDS.forEach((mid) => {
+      historyCache[mid] = generateFallbackHistory(mid);
+    });
+    setText("window-range", `Using local demo data because the backend was unavailable`);
+  } finally {
     renderHistory(metric);
     if (refreshBtn) {
       refreshBtn.textContent = "Trends Updated";
       setTimeout(() => {
         refreshBtn.textContent = "Refresh Trends";
       }, 900);
+      refreshBtn.disabled = false;
     }
-  } finally {
     trendLoading = false;
-    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 
