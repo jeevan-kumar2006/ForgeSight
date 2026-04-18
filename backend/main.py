@@ -21,76 +21,16 @@ agent = PredictiveMaintenanceAgent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[FORGESIGHT] Starting predictive maintenance agent...")
-    try:
-        task = asyncio.create_task(agent.start())
-        task.add_done_callback(lambda t: print(f"[FORGESIGHT] Task finished. Exception: {t.exception()}" if t.exception() else "[FORGESIGHT] Task finished normally."))
-        await asyncio.sleep(0.5)
-        if task.done() and task.exception():
-            print(f"[FORGESIGHT] CRITICAL: Agent task crashed immediately: {task.exception()}")
-            raise task.exception()
-        print("[FORGESIGHT] Agent initialization successful.")
-    except Exception as e:
-        print(f"[FORGESIGHT] ERROR during agent startup: {e}")
-        import traceback
-        traceback.print_exc()
-    
+    task = asyncio.create_task(agent.start())
+    task.add_done_callback(lambda t: print(f"[FORGESIGHT] Task finished. Exception: {t.exception()}" if t.exception() else "[FORGESIGHT] Task finished normally."))
     yield
-    
-    try:
-        await agent.stop()
-        if not task.done():
-            task.cancel()
-    except Exception as e:
-        print(f"[FORGESIGHT] Error during shutdown: {e}")
+    await agent.stop()
+    task.cancel()
 
 
 app = FastAPI(title="ForgeSight", lifespan=lifespan)
 
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend"))
-
-
-def _frontend_file(name: str) -> FileResponse:
-    return FileResponse(os.path.join(FRONTEND_DIR, name))
-
-
-@app.get("/app.js")
-async def serve_app_js():
-    return _frontend_file("app.js")
-
-
-@app.get("/history.js")
-async def serve_history_js():
-    return _frontend_file("history.js")
-
-
-@app.get("/noisefil.js")
-async def serve_noisefil_js():
-    return _frontend_file("noisefil.js")
-
-
-@app.get("/styles.css")
-async def serve_styles_css():
-    return _frontend_file("styles.css")
-
-
-@app.get("/history.css")
-async def serve_history_css():
-    return _frontend_file("history.css")
-
-
-@app.get("/noisefil.css")
-async def serve_noisefil_css():
-    return _frontend_file("noisefil.css")
-
-
-@app.get("/history.html")
-async def serve_history_page():
-    return _frontend_file("history.html")
-
-
-@app.get("/noisefil.html")
-async def serve_noisefil_page():
-    return _frontend_file("noisefil.html")
 
 
 @app.get("/stream/{machine_id}")
@@ -123,14 +63,9 @@ async def raise_alert(request: Request):
 @app.post("/schedule-maintenance")
 async def schedule_maintenance(request: Request):
     body = await request.json()
-    api_request_id = str(uuid.uuid4())[:8]
     slot = {
         "slot_id": str(uuid.uuid4())[:8],
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "api_received_at": datetime.now(timezone.utc).isoformat(),
-        "api_request_id": api_request_id,
-        "accepted_by_api": True,
-        "source": body.get("source", "api"),
         **body,
     }
     agent.maintenance_slots.append(slot)
@@ -171,19 +106,6 @@ async def get_priority_queue():
 @app.get("/api/maintenance")
 async def get_maintenance():
     return agent.maintenance_slots
-
-@app.get("/api/maintenance-forwarding-status")
-async def get_maintenance_forwarding_status():
-    return {
-        "forwarding": agent.maintenance_forwarding_stats,
-        "recent_slots": agent.maintenance_slots[:10],
-    }
-
-@app.get("/api/live-state")
-async def get_live_state():
-    snapshot = agent.live_snapshot()
-    snapshot["timestamp"] = datetime.now(timezone.utc).isoformat()
-    return snapshot
 
 @app.get("/api/baselines/{machine_id}")
 async def get_baselines(machine_id: str):
