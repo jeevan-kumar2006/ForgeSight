@@ -39,6 +39,7 @@ let maintenanceSlots = [];
 let prevPriorities = {};
 let sseConnected = false;
 let aiInsights = [];
+let fallbackIntervalId = null;
 
 const FALLBACK_BASELINES = {
   CNC_01: { temperature_C: 72, vibration_mm_s: 1.8, rpm: 1480, current_A: 12.5 },
@@ -584,7 +585,8 @@ async function pollLiveState() {
             statusEl.className = 'status-badge status-active';
         }
 
-        if (Array.isArray(payload.machines) && payload.machines.length) {
+        // When SSE is healthy, avoid overwriting chart points with polled snapshots.
+        if (!sseConnected && Array.isArray(payload.machines) && payload.machines.length) {
             payload.machines.forEach(applyLiveMachineData);
         }
 
@@ -641,6 +643,10 @@ function connectSSE() {
     source.addEventListener('open', () => {
         sseConnected = true;
         connEl.className = 'conn-dot connected';
+        if (fallbackIntervalId) {
+            clearInterval(fallbackIntervalId);
+            fallbackIntervalId = null;
+        }
     });
     source.addEventListener('error', () => {
         sseConnected = false;
@@ -737,7 +743,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!sseConnected && Object.keys(machineState[MACHINE_IDS[0]].readings).length === 0) {
             console.log('[ForgeSight] Backend unreachable; using demo data');
             applyFallbackData();
-            setInterval(applyFallbackData, 1000);
+            fallbackIntervalId = setInterval(applyFallbackData, 1000);
         }
     }, 5000);
 });
