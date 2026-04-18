@@ -1,138 +1,193 @@
-import asyncio
-import json
-import uuid
+import argparse
+import base64
 import os
-import traceback
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import List
+from typing import Dict, List, Optional
 
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+import httpx
 
-from backend.models import SensorReading
-from backend.mock_data import simulators, sse_stream_machine
-from backend.agent import PredictiveMaintenanceAgent, MACHINE_IDS
-
-agent = PredictiveMaintenanceAgent()
+try:
+    import serial  # type: ignore
+except Exception:  # pragma: no cover
+    serial = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("[FORGESIGHT] Starting predictive maintenance agent...")
-    task = asyncio.create_task(agent.start())
-    task.add_done_callback(lambda t: print(f"[FORGESIGHT] Task finished. Exception: {t.exception()}" if t.exception() else "[FORGESIGHT] Task finished normally."))
-    yield
-    await agent.stop()
-    task.cancel()
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-app = FastAPI(title="ForgeSight", lifespan=lifespan)
+def _env_list(name: str) -> List[str]:
+    raw = os.getenv(name, "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
-FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend"))
 
+class SmsAlerter:
+    """Dispatches high/critical alerts via modem, webhook, or Twilio."""
 
-@app.get("/stream/{machine_id}")
-async def stream_sensor(machine_id: str):
-    return StreamingResponse(
-        sse_stream_machine(machine_id),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    def __init__(self) -> None:
+        self.provider = os.getenv("SMS_PROVIDER", "auto").strip().lower()
 
-@app.get("/history/{machine_id}")
-async def get_history(machine_id: str):
-    sim = simulators.get(machine_id)
-    if not sim:
-        return JSONResponse({"error": f"Unknown machine {machine_id}"}, status_code=404)
-    return [r.model_dump() for r in sim.get_history()]
+        # Modem mode
+        self.modem_enabled = _env_bool("SMS_ENABLED", False)
+        self.modem_port = os.getenv("SMS_MODEM_PORT", "")
+        self.modem_baudrate = int(os.getenv("SMS_BAUDRATE", "115200"))
 
-@app.post("/alert")
-async def raise_alert(request: Request):
-    body = await request.json()
-    alert = {
-        "alert_id": str(uuid.uuid4())[:8],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **body,
-    }
-    agent.alerts.insert(0, alert)
-    await agent.event_bus.publish("alert", alert)
-    return {"status": "acknowledged", "alert_id": alert["alert_id"]}
+        # Common recipients
+        self.recipients = _env_list("SMS_RECIPIENTS")
 
-@app.post("/schedule-maintenance")
-async def schedule_maintenance(request: Request):
-    body = await request.json()
-    api_request_id = str(uuid.uuid4())[:8]
-    slot = {
-        "slot_id": str(uuid.uuid4())[:8],
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "api_received_at": datetime.now(timezone.utc).isoformat(),
-        "api_request_id": api_request_id,
-        "accepted_by_api": True,
-        "source": body.get("source", "api"),
-        **body,
-    }
-    agent.maintenance_slots.append(slot)
-    await agent.event_bus.publish("maintenance", slot)
-    return slot
+        # Webhook mode
+        self.webhook_enabled = _env_bool("WEBHOOK_ENABLED", False)
+        self.webhook_url = os.getenv("ALERT_WEBHOOK_URL", "")
+        self.webhook_bearer = os.getenv("ALERT_WEBHOOK_BEARER", "")
+        self.webhook_timeout = float(os.getenv("ALERT_WEBHOOK_TIMEOUT_SEC", "8"))
 
-@app.get("/agent/events")
-async def agent_events():
-    async def event_generator():
-        queue = agent.event_bus.subscribe()
+        # Twilio mode
+        self.twilio_enabled = _env_bool("TWILIO_ENABLED", False)
+        self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        self.twilio_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        self.twilio_from = os.getenv("TWILIO_FROM_NUMBER", "")
+
+    def send_alert(self, alert: Dict) -> bool:
+        priority = str(alert.get("priority", "")).lower()
+        if priority not in {"high", "critical"}:
+            return False
+
+        if not self.recipients:
+            print("[SMS] No SMS_RECIPIENTS configured; skipping alert dispatch")
+            return False
+
+        message = self._format_message(alert)
+        provider = self.provider
+
+        if provider == "modem":
+            return self._send_modem(message)
+        if provider == "webhook":
+            return self._send_webhook(alert, message)
+        if provider == "twilio":
+            return self._send_twilio(message)
+
+        # auto mode: modem -> webhook -> twilio
+        if self._send_modem(message):
+            return True
+        if self._send_webhook(alert, message):
+            return True
+        if self._send_twilio(message):
+            return True
+        return False
+
+    def _format_message(self, alert: Dict) -> str:
+        machine = alert.get("machine_id", "UNKNOWN")
+        prio = str(alert.get("priority", "")).upper() or "ALERT"
+        risk = alert.get("risk_score", "-")
+        reason = alert.get("reason_summary", "No summary")
+        return f"ForgeSight {prio}: {machine} | risk={risk} | {reason}"
+
+    def _send_modem(self, message: str) -> bool:
+        if not self.modem_enabled:
+            return False
+        if serial is None:
+            print("[SMS] pyserial unavailable; cannot send via modem")
+            return False
+        if not self.modem_port:
+            print("[SMS] SMS_MODEM_PORT not set; cannot send via modem")
+            return False
+
         try:
-            while True:
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-                yield f"event: {msg['type']}\ndata: {json.dumps(msg['data'], default=str)}\n\n"
-        except asyncio.CancelledError:
-            pass
-        finally:
-            agent.event_bus.unsubscribe(queue)
+            with serial.Serial(self.modem_port, self.modem_baudrate, timeout=5) as modem:
+                modem.write(b"AT\r")
+                modem.readline()
+                modem.write(b"AT+CMGF=1\r")
+                modem.readline()
+                for number in self.recipients:
+                    modem.write(f'AT+CMGS="{number}"\r'.encode())
+                    modem.readline()
+                    modem.write(message.encode("utf-8") + b"\x1a")
+                    modem.readline()
+            print("[SMS] Alert sent via modem")
+            return True
+        except Exception as exc:
+            print(f"[SMS] Modem send failed: {exc}")
+            return False
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    def _send_webhook(self, alert: Dict, message: str) -> bool:
+        if not self.webhook_enabled:
+            return False
+        if not self.webhook_url:
+            print("[SMS] ALERT_WEBHOOK_URL not set; cannot send webhook")
+            return False
 
-@app.get("/api/alerts")
-async def get_alerts():
-    return agent.alerts[:50]
+        payload = {
+            "message": message,
+            "alert": alert,
+            "recipients": self.recipients,
+        }
+        headers = {"Content-Type": "application/json"}
+        if self.webhook_bearer:
+            headers["Authorization"] = f"Bearer {self.webhook_bearer}"
 
-@app.get("/api/priority-queue")
-async def get_priority_queue():
-    return [p.model_dump() for p in agent.priority_queue]
+        try:
+            resp = httpx.post(self.webhook_url, json=payload, headers=headers, timeout=self.webhook_timeout)
+            resp.raise_for_status()
+            print("[SMS] Alert sent via webhook")
+            return True
+        except Exception as exc:
+            print(f"[SMS] Webhook send failed: {exc}")
+            return False
 
-@app.get("/api/maintenance")
-async def get_maintenance():
-    return agent.maintenance_slots
+    def _send_twilio(self, message: str) -> bool:
+        if not self.twilio_enabled:
+            return False
+        if not (self.twilio_sid and self.twilio_token and self.twilio_from):
+            print("[SMS] Twilio credentials incomplete; cannot send via Twilio")
+            return False
 
-@app.get("/api/maintenance-forwarding-status")
-async def get_maintenance_forwarding_status():
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.twilio_sid}/Messages.json"
+        auth_raw = f"{self.twilio_sid}:{self.twilio_token}".encode("utf-8")
+        auth = base64.b64encode(auth_raw).decode("ascii")
+        headers = {"Authorization": f"Basic {auth}"}
+
+        ok = False
+        for number in self.recipients:
+            data = {"From": self.twilio_from, "To": number, "Body": message}
+            try:
+                resp = httpx.post(url, data=data, headers=headers, timeout=10.0)
+                resp.raise_for_status()
+                ok = True
+            except Exception as exc:
+                print(f"[SMS] Twilio send failed for {number}: {exc}")
+        if ok:
+            print("[SMS] Alert sent via Twilio")
+        return ok
+
+
+def _build_test_alert(args: argparse.Namespace) -> Dict:
     return {
-        "forwarding": agent.maintenance_forwarding_stats,
-        "recent_slots": agent.maintenance_slots[:10],
+        "alert_id": "manualtest",
+        "machine_id": args.machine,
+        "priority": args.priority,
+        "risk_score": args.risk,
+        "reason_summary": args.reason,
     }
 
-@app.get("/api/live-state")
-async def get_live_state():
-    snapshot = agent.live_snapshot()
-    snapshot["timestamp"] = datetime.now(timezone.utc).isoformat()
-    return snapshot
 
-@app.get("/api/baselines/{machine_id}")
-async def get_baselines(machine_id: str):
-    bl = agent.baselines.get(machine_id)
-    if not bl: return {}
-    return {f: {"mean": getattr(bl, f).mean, "lower": getattr(bl, f).lower, "upper": getattr(bl, f).upper} for f in ["temperature_C", "vibration_mm_s", "rpm", "current_A"]}
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Send a manual ForgeSight SMS/webhook/Twilio test alert")
+    parser.add_argument("--provider", choices=["auto", "modem", "webhook", "twilio"], default="auto")
+    parser.add_argument("--machine", default="CNC_01")
+    parser.add_argument("--priority", choices=["low", "medium", "high", "critical"], default="high")
+    parser.add_argument("--risk", type=float, default=78.0)
+    parser.add_argument("--reason", default="Manual alert test")
+    args = parser.parse_args()
 
-@app.get("/")
-async def serve_index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    if "SMS_PROVIDER" not in os.environ:
+        os.environ["SMS_PROVIDER"] = args.provider
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+    alerter = SmsAlerter()
+    success = alerter.send_alert(_build_test_alert(args))
+    raise SystemExit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
