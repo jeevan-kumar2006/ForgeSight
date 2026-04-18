@@ -33,6 +33,50 @@ app = FastAPI(title="ForgeSight", lifespan=lifespan)
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend"))
 
 
+def _frontend_file(name: str) -> FileResponse:
+    return FileResponse(os.path.join(FRONTEND_DIR, name))
+
+
+@app.get("/app.js")
+async def serve_app_js():
+    return _frontend_file("app.js")
+
+
+@app.get("/history.js")
+async def serve_history_js():
+    return _frontend_file("history.js")
+
+
+@app.get("/noisefil.js")
+async def serve_noisefil_js():
+    return _frontend_file("noisefil.js")
+
+
+@app.get("/styles.css")
+async def serve_styles_css():
+    return _frontend_file("styles.css")
+
+
+@app.get("/history.css")
+async def serve_history_css():
+    return _frontend_file("history.css")
+
+
+@app.get("/noisefil.css")
+async def serve_noisefil_css():
+    return _frontend_file("noisefil.css")
+
+
+@app.get("/history.html")
+async def serve_history_page():
+    return _frontend_file("history.html")
+
+
+@app.get("/noisefil.html")
+async def serve_noisefil_page():
+    return _frontend_file("noisefil.html")
+
+
 @app.get("/stream/{machine_id}")
 async def stream_sensor(machine_id: str):
     return StreamingResponse(
