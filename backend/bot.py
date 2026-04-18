@@ -159,7 +159,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Display alert summary
         await update.message.reply_text(
             "🚨 CRITICAL ALERTS DETECTED\n"
-            "──────────────────────────\n\n"
+            "\n\n"
             "Found " + str(len(alerts)) + " active alert(s)\n\n"
             "Select a machine below to view full details and analysis:"
         )
@@ -307,7 +307,7 @@ async def handle_back_to_status(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "🚨 CRITICAL ALERTS DETECTED\n"
-            "──────────────────────────\n\n"
+            "\n\n"
             "Click any machine to view detailed report:",
             reply_markup=reply_markup
         )
