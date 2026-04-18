@@ -21,11 +21,27 @@ agent = PredictiveMaintenanceAgent()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[FORGESIGHT] Starting predictive maintenance agent...")
-    task = asyncio.create_task(agent.start())
-    task.add_done_callback(lambda t: print(f"[FORGESIGHT] Task finished. Exception: {t.exception()}" if t.exception() else "[FORGESIGHT] Task finished normally."))
+    try:
+        task = asyncio.create_task(agent.start())
+        task.add_done_callback(lambda t: print(f"[FORGESIGHT] Task finished. Exception: {t.exception()}" if t.exception() else "[FORGESIGHT] Task finished normally."))
+        await asyncio.sleep(0.5)
+        if task.done() and task.exception():
+            print(f"[FORGESIGHT] CRITICAL: Agent task crashed immediately: {task.exception()}")
+            raise task.exception()
+        print("[FORGESIGHT] Agent initialization successful.")
+    except Exception as e:
+        print(f"[FORGESIGHT] ERROR during agent startup: {e}")
+        import traceback
+        traceback.print_exc()
+    
     yield
-    await agent.stop()
-    task.cancel()
+    
+    try:
+        await agent.stop()
+        if not task.done():
+            task.cancel()
+    except Exception as e:
+        print(f"[FORGESIGHT] Error during shutdown: {e}")
 
 
 app = FastAPI(title="ForgeSight", lifespan=lifespan)

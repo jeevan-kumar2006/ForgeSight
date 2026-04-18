@@ -16,6 +16,35 @@ const METRIC_LABEL = {
 let cache = {};
 let refreshInProgress = false;
 
+const FALLBACK_BASELINES = {
+  CNC_01: { temperature_C: 72, vibration_mm_s: 1.8, rpm: 1480, current_A: 12.5 },
+  CNC_02: { temperature_C: 68, vibration_mm_s: 1.5, rpm: 1490, current_A: 11.8 },
+  PUMP_03: { temperature_C: 55, vibration_mm_s: 2.2, rpm: 2950, current_A: 18 },
+  CONVEYOR_04: { temperature_C: 45, vibration_mm_s: 0.9, rpm: 720, current_A: 8.5 },
+};
+
+function generateFallbackHistory(machineId, sampleCount = 1440) {
+  const baseline = FALLBACK_BASELINES[machineId] || FALLBACK_BASELINES.CNC_01;
+  const rows = [];
+  const start = Date.now() - sampleCount * 60_000;
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const t = start + i * 60_000;
+    const wave = Math.sin(i / 32) * 0.7 + Math.cos(i / 91) * 0.28;
+    const drift = i / sampleCount;
+    rows.push({
+      machine_id: machineId,
+      timestamp: new Date(t).toISOString(),
+      temperature_C: Number((baseline.temperature_C + wave * 1.8 + drift * 3).toFixed(2)),
+      vibration_mm_s: Number((baseline.vibration_mm_s + wave * 0.22 + drift * 0.55).toFixed(3)),
+      rpm: Number((baseline.rpm + Math.sin(i / 48) * 18 - drift * 28).toFixed(0)),
+      current_A: Number((baseline.current_A + wave * 0.32 + drift * 0.7).toFixed(2)),
+    });
+  }
+
+  return rows;
+}
+
 function downsample(series, maxPoints = 260) {
   if (series.length <= maxPoints) return series;
   const step = series.length / maxPoints;
@@ -181,16 +210,23 @@ async function loadHistoryData() {
     refreshBtn.textContent = "Refreshing...";
   }
 
-  const responses = await Promise.all(
-    MACHINE_IDS.map((mid) => fetch(`/history/${mid}`, { cache: "no-store" }).then((res) => {
-      if (!res.ok) throw new Error(`Failed to load history for ${mid}`);
-      return res.json();
-    }))
-  );
+  try {
+    const responses = await Promise.all(
+      MACHINE_IDS.map((mid) => fetch(`/history/${mid}`, { cache: "no-store" }).then((res) => {
+        if (!res.ok) throw new Error(`Failed to load history for ${mid}`);
+        return res.json();
+      }))
+    );
 
-  MACHINE_IDS.forEach((mid, idx) => {
-    cache[mid] = responses[idx];
-  });
+    MACHINE_IDS.forEach((mid, idx) => {
+      cache[mid] = responses[idx];
+    });
+  } catch (err) {
+    MACHINE_IDS.forEach((mid) => {
+      cache[mid] = generateFallbackHistory(mid);
+    });
+    setText("nf-refresh-time", "Using local demo data because the backend was unavailable");
+  }
 
   if (refreshBtn) {
     refreshBtn.disabled = false;
